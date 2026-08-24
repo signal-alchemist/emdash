@@ -1,11 +1,8 @@
 import { definePlugin } from "emdash";
-import type { PluginDescriptor } from "emdash";
+import type { AnalyticsCollectorOptions } from "./descriptor.js";
 
-export interface AnalyticsCollectorOptions {
-  enabled?: boolean;
-  maxBatchSize?: number;
-  developmentBufferLimit?: number;
-}
+export { analyticsCollectorPlugin } from "./descriptor.js";
+export type { AnalyticsCollectorOptions } from "./descriptor.js";
 
 type IncomingEvent = {
   eventId: string;
@@ -43,18 +40,6 @@ function readBatch(input: unknown, maxBatchSize: number): IncomingEvent[] {
           : undefined,
     };
   });
-}
-
-export function analyticsCollectorPlugin(
-  options: AnalyticsCollectorOptions = {},
-): PluginDescriptor {
-  return {
-    id: "sa-analytics-collector",
-    version: "0.1.0",
-    format: "native",
-    entrypoint: "@signal-alchemist/emdash-plugin-analytics-collector",
-    options,
-  };
 }
 
 export function createPlugin(options: AnalyticsCollectorOptions = {}) {

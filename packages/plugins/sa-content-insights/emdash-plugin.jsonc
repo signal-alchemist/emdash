@@ -1,7 +1,7 @@
 {
   "$schema": "../../plugin-cli/schemas/emdash-plugin.schema.json",
   "slug": "sa-content-insights",
-  // Add the publisher DID before marketplace publication.
+  "publisher": "signal-alchemist.github.io", // TODO: publication is blocked until this handle resolves to the org's verified atproto DID.
   "license": "MIT",
   "author": { "name": "signal-alchemist" },
   "security": { "url": "https://github.com/signal-alchemist/emdash/security/advisories/new" },

@@ -1,0 +1,25 @@
+{
+  "name": "@signal-alchemist/emdash-plugin-analytics-collector",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./descriptor": "./src/descriptor.ts",
+    "./client": "./src/client.ts"
+  },
+  "files": ["src", "README.md"],
+  "peerDependencies": {
+    "emdash": "workspace:>=0.15.0"
+  },
+  "devDependencies": {
+    "jsonc-parser": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsgo --noEmit"
+  }
+}

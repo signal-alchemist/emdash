@@ -4,6 +4,7 @@ const files = {
   syncManifest: "packages/plugins/sa-github-content-sync/emdash-plugin.jsonc",
   insightsManifest: "packages/plugins/sa-content-insights/emdash-plugin.jsonc",
   analyticsRuntime: "packages/plugins/sa-analytics-collector/src/index.ts",
+  analyticsDescriptor: "packages/plugins/sa-analytics-collector/src/descriptor.ts",
   architecture: "docs/marketing-automation/architecture.md",
   reuseAudit: "docs/marketing-automation/reuse-audit.md",
 };
@@ -43,7 +44,7 @@ forbidMatch(
   "Analytics collector must not mutate editorial content or media",
 );
 requireMatch(
-  "analyticsRuntime",
+  "analyticsDescriptor",
   /format:\s*"native"/,
   "Analytics collector must remain native while it owns browser script integration",
 );
