@@ -9,7 +9,9 @@
  */
 
 import { MediaUsageActivationWriteBlockedError } from "../api/media-usage-write-fence.js";
+import { ContentMutationConflictError } from "../database/repositories/types.js";
 import { PluginContextFactory, type PluginContextFactoryOptions } from "./context.js";
+import { PluginRevisionConflictError } from "./errors.js";
 import { extractRequestMeta } from "./request-meta.js";
 import type { ResolvedPlugin, RouteContext, PluginRoute, UserInfo } from "./types.js";
 
@@ -247,6 +249,16 @@ export class PluginRouteHandler {
 				status: 200,
 			};
 		} catch (error) {
+			if (
+				error instanceof PluginRevisionConflictError ||
+				error instanceof ContentMutationConflictError
+			) {
+				return {
+					success: false,
+					error: { code: "CONFLICT", message: error.message },
+					status: 409,
+				};
+			}
 			if (error instanceof MediaUsageActivationWriteBlockedError) {
 				return {
 					success: false,

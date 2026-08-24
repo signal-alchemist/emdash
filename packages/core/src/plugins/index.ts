@@ -39,6 +39,7 @@ export {
 	createUrlHelper,
 	createSiteInfo,
 } from "./context.js";
+export { PluginRevisionConflictError } from "./errors.js";
 export type { PluginContextFactoryOptions } from "./context.js";
 
 // Hooks
@@ -123,6 +124,8 @@ export type {
 	UserAccess,
 	ContentItem,
 	ContentCreateOptions,
+	ContentUpdateOptions,
+	ContentPublishOptions,
 	ContentWriteInput,
 	MediaItem,
 	ContentListOptions,

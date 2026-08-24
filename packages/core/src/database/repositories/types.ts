@@ -36,6 +36,8 @@ export interface UpdateContentInput {
 	scheduledAt?: string | null;
 	authorId?: string | null;
 	primaryBylineId?: string | null;
+	/** Internal row fence used by revision-aware plugin writes. */
+	expected?: Pick<ContentItem, "version" | "liveRevisionId" | "draftRevisionId">;
 }
 
 /** SEO fields for content items */

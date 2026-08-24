@@ -8,12 +8,15 @@
 import type { Kysely } from "kysely";
 import { ulid } from "ulidx";
 
+import { encodeRev, validateRev } from "../api/rev.js";
 import { ContentRepository } from "../database/repositories/content.js";
 import { MediaRepository } from "../database/repositories/media.js";
 import { OptionsRepository } from "../database/repositories/options.js";
 import { PluginStorageRepository } from "../database/repositories/plugin-storage.js";
 import { SeoRepository } from "../database/repositories/seo.js";
 import { TaxonomyRepository, type Taxonomy } from "../database/repositories/taxonomy.js";
+import { ContentMutationConflictError } from "../database/repositories/types.js";
+import type { ContentItem as RepositoryContentItem } from "../database/repositories/types.js";
 import { UserRepository } from "../database/repositories/user.js";
 import { withTransaction } from "../database/transaction.js";
 import type { Database } from "../database/types.js";
@@ -29,6 +32,16 @@ import { invalidateSiteSettingsCache } from "../settings/index.js";
 import type { Storage } from "../storage/types.js";
 import { CronAccessImpl } from "./cron.js";
 import type { EmailPipeline } from "./email.js";
+import { PluginRevisionConflictError } from "./errors.js";
+
+const SHA256_RE = /^[0-9a-f]{64}$/i;
+function hasControlCharacter(value: string): boolean {
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code < 0x20 || code === 0x7f) return true;
+	}
+	return false;
+}
 import type {
 	ResolvedPlugin,
 	PluginContext,
@@ -48,9 +61,12 @@ import type {
 	UserInfo,
 	ContentItem,
 	ContentCreateOptions,
+	ContentUpdateOptions,
+	ContentPublishOptions,
 	ContentItemSeoInput,
 	ContentWriteInput,
 	MediaItem,
+	MediaUploadOptions,
 	PaginatedResult,
 	QueryOptions,
 	ContentListOptions,
@@ -235,6 +251,25 @@ function taxonomyToTermInfo(term: Taxonomy): TaxonomyTermInfo {
 /**
  * Create read-only content access
  */
+function toPluginContentItem(
+	item: Awaited<ReturnType<ContentRepository["findById"]>>,
+): ContentItem {
+	if (!item) throw new Error("Content not found");
+	return {
+		id: item.id,
+		type: item.type,
+		slug: item.slug,
+		status: item.status,
+		data: item.data,
+		createdAt: item.createdAt,
+		updatedAt: item.updatedAt,
+		locale: item.locale,
+		publishedAt: item.publishedAt,
+		scheduledAt: item.scheduledAt,
+		revision: encodeRev(item),
+	};
+}
+
 export function createContentAccess(db: Kysely<Database>): ContentAccess {
 	const contentRepo = new ContentRepository(db);
 	const seoRepo = new SeoRepository(db);
@@ -244,18 +279,7 @@ export function createContentAccess(db: Kysely<Database>): ContentAccess {
 			const item = await contentRepo.findById(collection, id);
 			if (!item) return null;
 
-			const result: ContentItem = {
-				id: item.id,
-				type: item.type,
-				slug: item.slug,
-				status: item.status,
-				data: item.data,
-				createdAt: item.createdAt,
-				updatedAt: item.updatedAt,
-				locale: item.locale,
-				publishedAt: item.publishedAt,
-				scheduledAt: item.scheduledAt,
-			};
+			const result = toPluginContentItem(item);
 
 			if (await seoRepo.isEnabled(collection)) {
 				result.seo = await seoRepo.get(collection, item.id);
@@ -285,18 +309,7 @@ export function createContentAccess(db: Kysely<Database>): ContentAccess {
 				where: options?.where,
 			});
 
-			const items: ContentItem[] = result.items.map((item) => ({
-				id: item.id,
-				type: item.type,
-				slug: item.slug,
-				status: item.status,
-				data: item.data,
-				createdAt: item.createdAt,
-				updatedAt: item.updatedAt,
-				locale: item.locale,
-				publishedAt: item.publishedAt,
-				scheduledAt: item.scheduledAt,
-			}));
+			const items: ContentItem[] = result.items.map(toPluginContentItem);
 
 			if (items.length > 0 && (await seoRepo.isEnabled(collection))) {
 				const seoMap = await seoRepo.getMany(
@@ -402,18 +415,7 @@ export function createContentAccessWithWrite(
 					});
 					contentMutated = true;
 
-					const result: ContentItem = {
-						id: item.id,
-						type: item.type,
-						slug: item.slug,
-						status: item.status,
-						data: item.data,
-						createdAt: item.createdAt,
-						updatedAt: item.updatedAt,
-						locale: item.locale,
-						publishedAt: item.publishedAt,
-						scheduledAt: item.scheduledAt,
-					};
+					const result = toPluginContentItem(item);
 
 					if (hasSeo) {
 						result.seo =
@@ -430,14 +432,22 @@ export function createContentAccessWithWrite(
 				if (contentMutated) {
 					await markContentMediaUsageCollectionStaleSafely(db, collection, "CONTENT_USAGE_STALE");
 				}
+				if (error instanceof ContentMutationConflictError) {
+					throw new PluginRevisionConflictError(error.message);
+				}
 				throw error;
 			}
 		},
 
-		async update(collection: string, id: string, data: ContentWriteInput): Promise<ContentItem> {
+		async update(
+			collection: string,
+			id: string,
+			data: ContentWriteInput,
+			options: ContentUpdateOptions = {},
+		): Promise<ContentItem> {
 			await beforeContentWrite?.();
 			const { fields, seo } = splitSeoFromInput(data);
-			const hasFieldUpdates = Object.keys(fields).length > 0;
+			const hasFieldUpdates = Object.keys(fields).length > 0 || options.slug !== undefined;
 			let contentMutated = false;
 
 			try {
@@ -452,27 +462,35 @@ export function createContentAccessWithWrite(
 					// bump updated_at/version, but we want a seo-only call to touch
 					// only the SEO table. updateDraftAware delegates no-op writes to
 					// ContentRepository.update.
+					const existing =
+						options.expectedRevision || options.slug !== undefined
+							? await trxContentRepo.findById(collection, id)
+							: null;
+					if (options.expectedRevision) {
+						if (!existing) throw new Error("Content not found");
+						const revisionCheck = validateRev(options.expectedRevision, existing);
+						if (!revisionCheck.valid) {
+							throw new PluginRevisionConflictError(revisionCheck.message);
+						}
+					}
+
 					const item = hasFieldUpdates
-						? await trxContentRepo.updateDraftAware(collection, id, { data: fields })
+						? await trxContentRepo.updateDraftAware(collection, id, {
+								data: fields,
+								slug: options.slug,
+								expected: options.expectedRevision ? (existing ?? undefined) : undefined,
+							})
 						: await (async () => {
-								const existing = await trxContentRepo.findById(collection, id);
-								if (!existing) throw new Error("Content not found");
+								if (!existing) {
+									const found = await trxContentRepo.findById(collection, id);
+									if (!found) throw new Error("Content not found");
+									return found;
+								}
 								return existing;
 							})();
 					if (hasFieldUpdates) contentMutated = true;
 
-					const result: ContentItem = {
-						id: item.id,
-						type: item.type,
-						slug: item.slug,
-						status: item.status,
-						data: item.data,
-						createdAt: item.createdAt,
-						updatedAt: item.updatedAt,
-						locale: item.locale,
-						publishedAt: item.publishedAt,
-						scheduledAt: item.scheduledAt,
-					};
+					const result = toPluginContentItem(item);
 
 					if (hasSeo) {
 						result.seo =
@@ -491,6 +509,9 @@ export function createContentAccessWithWrite(
 				if (contentMutated) {
 					await markContentMediaUsageCollectionStaleSafely(db, collection, "CONTENT_USAGE_STALE");
 				}
+				if (error instanceof ContentMutationConflictError) {
+					throw new PluginRevisionConflictError(error.message);
+				}
 				throw error;
 			}
 		},
@@ -504,12 +525,82 @@ export function createContentAccessWithWrite(
 			}
 			return deleted;
 		},
+
+		async publish(
+			collection: string,
+			id: string,
+			options: ContentPublishOptions = {},
+		): Promise<ContentItem> {
+			await beforeContentWrite?.();
+			let published: RepositoryContentItem;
+			try {
+				published = await withTransaction(db, async (trx) => {
+					const repo = new ContentRepository(trx);
+					const existing = await repo.findById(collection, id);
+					if (!existing) throw new Error("Content not found");
+					if (options.expectedRevision) {
+						const revisionCheck = validateRev(options.expectedRevision, existing);
+						if (!revisionCheck.valid) throw new PluginRevisionConflictError(revisionCheck.message);
+					}
+					return repo.publish(
+						collection,
+						id,
+						options.publishedAt,
+						false,
+						undefined,
+						true,
+						true,
+						existing,
+					);
+				});
+			} catch (error) {
+				if (error instanceof ContentMutationConflictError) {
+					throw new PluginRevisionConflictError(error.message);
+				}
+				throw error;
+			}
+			await markContentMediaUsageCollectionStaleSafely(db, collection, "CONTENT_USAGE_STALE");
+			return toPluginContentItem(published);
+		},
+
+		async unpublish(
+			collection: string,
+			id: string,
+			options: { expectedRevision?: string } = {},
+		): Promise<ContentItem> {
+			await beforeContentWrite?.();
+			let unpublished: RepositoryContentItem;
+			try {
+				unpublished = await withTransaction(db, async (trx) => {
+					const repo = new ContentRepository(trx);
+					const existing = await repo.findById(collection, id);
+					if (!existing) throw new Error("Content not found");
+					if (options.expectedRevision) {
+						const revisionCheck = validateRev(options.expectedRevision, existing);
+						if (!revisionCheck.valid) throw new PluginRevisionConflictError(revisionCheck.message);
+					}
+					return repo.unpublish(collection, id, options.expectedRevision ? existing : undefined);
+				});
+			} catch (error) {
+				if (error instanceof ContentMutationConflictError) {
+					throw new PluginRevisionConflictError(error.message);
+				}
+				throw error;
+			}
+			await markContentMediaUsageCollectionStaleSafely(db, collection, "CONTENT_USAGE_STALE");
+			return toPluginContentItem(unpublished);
+		},
 	};
 }
 
 // =============================================================================
 // Media Access
 // =============================================================================
+
+async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
+	const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 /**
  * Create read-only media access
@@ -527,7 +618,29 @@ export function createMediaAccess(db: Kysely<Database>): MediaAccess {
 				filename: item.filename,
 				mimeType: item.mimeType,
 				size: item.size,
+				width: item.width,
+				height: item.height,
+				alt: item.alt,
+				sha256: item.sha256,
 				// Construct URL from storage key (or use a sensible default path)
+				url: `/media/${item.id}/${item.filename}`,
+				createdAt: item.createdAt,
+			};
+		},
+
+		async findBySha256(sha256: string): Promise<MediaItem | null> {
+			if (!SHA256_RE.test(sha256)) throw new Error("Invalid SHA-256 digest");
+			const item = await mediaRepo.findBySha256(sha256);
+			if (!item) return null;
+			return {
+				id: item.id,
+				filename: item.filename,
+				mimeType: item.mimeType,
+				size: item.size,
+				width: item.width,
+				height: item.height,
+				alt: item.alt,
+				sha256: item.sha256,
 				url: `/media/${item.id}/${item.filename}`,
 				createdAt: item.createdAt,
 			};
@@ -546,6 +659,10 @@ export function createMediaAccess(db: Kysely<Database>): MediaAccess {
 					filename: item.filename,
 					mimeType: item.mimeType,
 					size: item.size,
+					width: item.width,
+					height: item.height,
+					alt: item.alt,
+					sha256: item.sha256,
 					url: `/media/${item.id}/${item.filename}`,
 					createdAt: item.createdAt,
 				})),
@@ -612,11 +729,46 @@ export function createMediaAccessWithWrite(
 			filename: string,
 			contentType: string,
 			bytes: ArrayBuffer,
+			options: MediaUploadOptions = {},
 		): Promise<{ mediaId: string; storageKey: string; url: string }> {
 			if (!storage) {
 				throw new Error(
 					"Media upload() requires a storage backend. Configure storage in PluginContextFactoryOptions.",
 				);
+			}
+
+			const sha256 = await sha256Hex(bytes);
+			if (options.sha256 !== undefined && !SHA256_RE.test(options.sha256)) {
+				throw new Error("sha256 must be a 64-character hexadecimal digest");
+			}
+			if (options.sha256 !== undefined && options.sha256.toLowerCase() !== sha256) {
+				throw new Error("sha256 does not match uploaded bytes");
+			}
+			const enriched = await enrichImageMetadata(new Uint8Array(bytes), contentType);
+			if (
+				options.deduplicate &&
+				(!options.alt || options.alt.length > 255 || hasControlCharacter(options.alt))
+			) {
+				throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
+			}
+			if (options.deduplicate) {
+				const existing = await mediaRepo.findBySha256(sha256);
+				if (existing) {
+					if (
+						existing.mimeType !== contentType ||
+						existing.size !== bytes.byteLength ||
+						existing.width !== (enriched.width ?? null) ||
+						existing.height !== (enriched.height ?? null) ||
+						existing.alt !== options.alt
+					) {
+						throw new Error("Media SHA-256 matches but metadata conflicts");
+					}
+					return {
+						mediaId: existing.id,
+						storageKey: existing.storageKey,
+						url: `/_emdash/api/media/file/${existing.storageKey}`,
+					};
+				}
 			}
 
 			// Generate a storage key with a unique prefix
@@ -627,15 +779,12 @@ export function createMediaAccessWithWrite(
 			const ext = dotIdx > 0 ? basename.slice(dotIdx).toLowerCase() : "";
 			const storageKey = `${keyPrefix}${ext}`;
 
-			// Upload to storage first
+			// Upload only after hashing and metadata validation so failures cannot orphan storage.
 			await storage.upload({
 				key: storageKey,
 				body: new Uint8Array(bytes),
 				contentType,
 			});
-
-			// Derive dimensions + LQIP placeholders (no-op for non-images).
-			const enriched = await enrichImageMetadata(new Uint8Array(bytes), contentType);
 
 			// Create DB record — clean up storage on failure
 			let media;
@@ -650,12 +799,32 @@ export function createMediaAccessWithWrite(
 					height: enriched.height,
 					blurhash: enriched.blurhash,
 					dominantColor: enriched.dominantColor,
+					sha256,
+					alt: options.alt,
 				});
 			} catch (error) {
 				try {
 					await storage.delete(storageKey);
 				} catch {
 					// Best-effort cleanup
+				}
+				const winner = await mediaRepo.findBySha256(sha256);
+				if (winner) {
+					const expectedAlt = options.alt ?? null;
+					if (
+						winner.mimeType === contentType &&
+						winner.size === bytes.byteLength &&
+						winner.width === (enriched.width ?? null) &&
+						winner.height === (enriched.height ?? null) &&
+						winner.alt === expectedAlt
+					) {
+						return {
+							mediaId: winner.id,
+							storageKey: winner.storageKey,
+							url: `/_emdash/api/media/file/${winner.storageKey}`,
+						};
+					}
+					throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
 				}
 				throw error;
 			}
