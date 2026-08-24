@@ -1,0 +1,19 @@
+{
+  "name": "@signal-alchemist/emdash-plugin-content-insights",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/plugin.ts",
+  "exports": {
+    ".": "./src/plugin.ts"
+  },
+  "peerDependencies": {
+    "emdash": "workspace:>=0.15.0"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit"
+  }
+}
