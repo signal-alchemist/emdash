@@ -11,10 +11,15 @@
   "peerDependencies": {
     "emdash": "workspace:>=0.15.0"
   },
+  "dependencies": {
+    "@signal-alchemist/marketing-automation-contracts": "workspace:*"
+  },
   "devDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
   }
 }

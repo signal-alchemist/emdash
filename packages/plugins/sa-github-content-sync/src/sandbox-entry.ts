@@ -1,5 +1,7 @@
 import type { SandboxedPlugin } from "emdash/plugin";
 
+import { buildSyncPlan } from "./planner.js";
+
 type StagedSync = {
 	deliveryId: string;
 	repository: string;
@@ -114,6 +116,12 @@ export function readVerifiedWebhook(input: unknown): VerifiedWebhook {
 
 export default {
 	routes: {
+		plan: {
+			handler: async (routeCtx, ctx) => {
+				if (!ctx.http) throw new Error("GitHub plan requires network:request capability");
+				return buildSyncPlan(routeCtx.input, ctx.http.fetch.bind(ctx.http));
+			},
+		},
 		webhook: {
 			public: true,
 			handler: async (routeCtx, ctx) => {

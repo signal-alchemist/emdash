@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import plugin, { readVerifiedWebhook } from "../src/sandbox-entry.js";
 
@@ -63,5 +63,33 @@ describe("readVerifiedWebhook", () => {
 		expect(records.get("delivery-1:" + "a".repeat(40))).not.toHaveProperty("rawBody");
 		expect(records.get("delivery-1:" + "a".repeat(40))).not.toHaveProperty("signature");
 		expect(records.get("delivery-1:" + "a".repeat(40))).not.toHaveProperty("secret");
+	});
+
+	it("plan route reads HTTP only and never requests content, media, or storage access", async () => {
+		const fetch = async () => new Response("", { status: 400 });
+		const forbidden = new Proxy({}, { get: () => { throw new Error("forbidden capability accessed"); } });
+		const handler = plugin.routes.plan.handler;
+		await expect(handler({ input: {} }, { http: { fetch }, content: forbidden, media: forbidden, storage: forbidden } as never))
+			.rejects.toThrow("GITHUB_SYNC_PLAN_INVALID");
+	});
+
+	it("plans from a valid normalized #7 ingress record", async () => {
+		const sha = "a".repeat(40);
+		const body = "---\ncontentId: content-launch\nlocale: en\ntype: post\ncanonicalRoute: /posts/launch/\ntitle: Launch\nslug: launch\npublishState: published\nupdatedAt: 2026-08-25T00:00:00.000Z\n---\n";
+		const fetch = vi.fn(async (url: string) => {
+			if (url.includes("/git/trees/")) return new Response(JSON.stringify({ tree: [
+				{ path: "content/post.md", type: "blob", sha: "b".repeat(40) },
+				{ path: "content-manifest.json", type: "blob", sha: "c".repeat(40) },
+				{ path: "media-manifest.json", type: "blob", sha: "d".repeat(40) },
+			] }), { headers: { "content-type": "application/json" } });
+			if (url.endsWith("/content-manifest.json")) return new Response(JSON.stringify({ identityManifest: { schemaVersion: 1, siteId: "site-001", entries: [{ contentId: "content-launch", locale: "en", source: { repository: "signal-alchemist/site", branch: "refs/heads/main", path: "content/post.md", commitSha: sha }, kind: "post", revision: 1, canonicalRoute: "/posts/launch/" }] }, documents: [{ source: { path: "content/post.md" }, locale: "en", kind: "post", contentId: "content-launch", canonical: "/posts/launch/" }] }), { headers: { "content-type": "application/json" } });
+			if (url.endsWith("/media-manifest.json")) return new Response(JSON.stringify({ schemaVersion: 1, media: [] }), { headers: { "content-type": "application/json" } });
+			return new Response(body, { headers: { "content-type": "text/plain" } });
+		});
+		const ingress = { deliveryId: "delivery-1", event: "pull_request", repository: "signal-alchemist/site", branch: "refs/heads/main", commitSha: sha, actorId: "7", pullRequestNumber: 42, filesUrl: "https://api.github.com/repos/signal-alchemist/site/pulls/42/files" };
+		const forbidden = new Proxy({}, { get: () => { throw new Error("forbidden capability accessed"); } });
+		const result = await plugin.routes.plan.handler({ input: ingress }, { http: { fetch }, content: forbidden, media: forbidden, storage: forbidden } as never);
+		expect(result).toMatchObject({ version: 1, trace: ingress });
+		expect(fetch).toHaveBeenCalledTimes(4);
 	});
 });
