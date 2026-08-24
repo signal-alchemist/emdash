@@ -283,6 +283,18 @@ export {
 	validateMetricSnapshot,
 	validateTraceabilityRecord,
 } from "./validators.js";
+export {
+	AnalyticsBatchValidationError,
+	validateAnalyticsEventBatch,
+	serializeAnalyticsEventBatch,
+	MAX_MONEY_MINOR,
+} from "./analytics-batch.js";
+export type {
+	AnalyticsConsentReceipt,
+	AnalyticsEventBatch,
+	ConsentState,
+	NormalizedAnalyticsEvent,
+} from "./analytics-batch.js";
 
 export {
 	buildMediaManifest,
