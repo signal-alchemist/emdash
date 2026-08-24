@@ -16,7 +16,7 @@ The existing `signal-alchemist/CloudFlare-CMS` repository already exposes severa
 
 | Existing implementation | Reuse in this fork | Status |
 | --- | --- | --- |
-| `scripts/build-content-catalog.ts` | Stable source-path/content-ID catalog used by sync planning | Contract adapted in `marketing-automation-contracts` |
+| `scripts/lib/content-identity.ts`, `scripts/build-content-catalog.ts` | Stable source-path/content-ID validation and body-free catalog used by sync planning | Adapted in `marketing-automation-contracts`; provenance recorded below |
 | `scripts/migration/inventory-wordpress.ts` | WordPress inventory and cutover input | Reuse output contract; runtime remains in the site repo |
 | `scripts/verify-editorial-media.ts` | Media manifest, editorial validation, and missing-alt checks | Port validation rules into the GitHub sync pipeline |
 | `scripts/check-growth-boundaries.mjs` | Prevent analytics/growth code from leaking across architectural boundaries | Port as a fork-specific boundary check after plugin paths stabilize |
@@ -26,6 +26,16 @@ The existing `signal-alchemist/CloudFlare-CMS` repository already exposes severa
 | media and migration fixture tests | Deterministic fixtures for image and WordPress migration behavior | Import selected fixtures in a follow-up PR |
 
 The first PR intentionally imports the shared data model rather than copying the CloudFlare-CMS runtime. That avoids embedding a site-specific Worker/D1 implementation into EmDash core before plugin boundaries are reviewed.
+
+## Adapted contract provenance
+
+The content identity and catalog contract is adapted from CloudFlare-CMS commit `5c322909d41b49a5d492d50160679cfef71dda88`:
+
+- `scripts/lib/content-identity.ts`: stable content ID, source path, revision, commit SHA, and canonical route validation.
+- `scripts/build-content-catalog.ts`: public/internal catalog shapes, deterministic content ordering, and body-free entries.
+- `tests/unit/content-catalog.test.ts`: body-free scope assertions and unknown content ID coverage.
+
+The EmDash adaptation keeps `ContentId`, `GitSourceRef`, and `ContentSyncCommand.source` compatibility in `packages/marketing-automation-contracts`. It adds locale to the identity and catalog records, validates configured content roots, bounds input and error sizes, and serializes catalog fields explicitly. It does not copy Astro site configuration, filesystem traversal, or Cloudflare deployment code. The adapted tests cover invalid paths and routes, full lowercase commit SHAs, stable IDs, locale and document mismatches, bounded errors, deterministic ordering, and body-free serialization.
 
 ## Growth-OS
 

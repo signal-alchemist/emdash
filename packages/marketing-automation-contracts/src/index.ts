@@ -222,3 +222,13 @@ export interface TraceabilityRecord {
   approvedBy?: string;
   approvedAt?: ISODateTime;
 }
+
+export {
+	serializeContentCatalog,
+	validateContentIdentityManifest,
+	type ContentCatalog,
+	type ContentCatalogEntry,
+	type ContentIdentityDocument,
+	type ContentIdentityEntry,
+	type ContentIdentityManifest,
+} from "./content-catalog.js";

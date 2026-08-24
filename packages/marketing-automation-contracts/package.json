@@ -10,9 +10,11 @@
     }
   },
   "scripts": {
-    "typecheck": "tsgo --noEmit"
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
   },
   "devDependencies": {
-    "typescript": "catalog:"
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   }
 }
