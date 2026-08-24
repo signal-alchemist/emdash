@@ -1,0 +1,20 @@
+{
+  "$schema": "../../plugin-cli/schemas/emdash-plugin.schema.json",
+  "slug": "sa-github-content-sync",
+  // Add the publisher DID before marketplace publication.
+  "license": "MIT",
+  "author": { "name": "signal-alchemist" },
+  "security": { "url": "https://github.com/signal-alchemist/emdash/security/advisories/new" },
+  "description": "Revision-safe GitHub article and media synchronization for EmDash.",
+  "capabilities": ["content:write", "media:write", "network:request"],
+  "allowedHosts": ["api.github.com", "raw.githubusercontent.com"],
+  "storage": {
+    "syncRuns": {
+      "indexes": ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"]
+    }
+  },
+  "admin": {
+    "pages": [{ "path": "/deliveries", "label": "Content Sync", "icon": "arrows-clockwise" }],
+    "widgets": [{ "id": "sync-status", "title": "Content Sync", "size": "third" }]
+  }
+}
