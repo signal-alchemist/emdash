@@ -62,7 +62,11 @@ The EmDash adaptation is in `packages/marketing-automation-contracts/src/media-m
 
 The implementation phase should compare the exact Growth-OS schemas and persistence APIs before copying code. Database and orchestration code should remain behind adapters because Growth-OS and EmDash have different runtime, permission, and retention requirements.
 
+For Growth-OS Issue #12, the plugin uses only the source vocabulary and normalized snapshot boundary; it does not copy provider clients, event persistence, or site runtime. The pinned checkout is `8b1eeabce078f3858fad3d2557f25c12b01ec975`. The vocabulary sources are `apps/web/modules/analytics/gsc-import.ts` (`a819dba5e21144c22dc9c87a01c8f8e6fdf0bf13`), `apps/web/modules/analytics/ga4-import.ts` (`a819dba5e21144c22dc9c87a01c8f8e6fdf0bf13`), `apps/web/modules/analytics/funnel-snapshots.ts` (`e9d7fd73d6d2368e2ceaa738a13e399b9fdc1cdb`), `apps/web/modules/analytics/experiment-registry.ts` (`73620edca289e9e918aae8fa103c7a03ac424786`), `apps/web/modules/analytics/business-events.ts` (`b264e7567cbc4472a1dfd1e1c4a232599f460274`), `apps/web/modules/analytics/revenue-events.ts` (`13843987a6e3a430dcc77e0807b4b1d3d2950e0b`), `apps/web/modules/analytics/funnel-events.ts` (`2ea2992f09af7b130ddf4dd70255f79b400eb7d7`), and `apps/web/modules/analytics/metric-registry.ts` (`bcb67ab5e4130c069fe56a34cf31eae2e2c9f5a6`). The adapted boundary is `packages/plugins/sa-content-insights/src/snapshot-contract.ts`; its pure `adaptSourceRow` dispatch normalizes concrete GSC, GA4, first-party funnel, experiment, and CRM/revenue aggregate rows before the separate exact envelope path, and stores normalized, body-free envelopes.
+
 ## What is pulled into this PR
+
+The GSC adapter's clicks-to-sessions/pageViews fields are an explicitly named landing-proxy formula for content-level correlation, not a claim that Search Console clicks are analytics sessions or page views.
 
 The shared `marketing-automation-contracts` package consolidates the portable parts needed by all three plugins:
 
