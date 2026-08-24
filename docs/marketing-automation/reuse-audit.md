@@ -37,6 +37,15 @@ The content identity and catalog contract is adapted from CloudFlare-CMS commit 
 
 The EmDash adaptation keeps `ContentId`, `GitSourceRef`, and `ContentSyncCommand.source` compatibility in `packages/marketing-automation-contracts`. It adds locale to the identity and catalog records, validates configured content roots, bounds input and error sizes, and serializes catalog fields explicitly. It does not copy Astro site configuration, filesystem traversal, or Cloudflare deployment code. The adapted tests cover invalid paths and routes, full lowercase commit SHAs, stable IDs, locale and document mismatches, bounded errors, deterministic ordering, and body-free serialization.
 
+The media manifest contract is adapted from CloudFlare-CMS commit `5c322909d41b49a5d492d50160679cfef71dda88`:
+
+- `scripts/lib/media-manifest.ts`: immutable media identity, supported extension/MIME mapping, duplicate handling, and deterministic serialization.
+- `scripts/lib/editorial-media.ts`: bounded filename, byte, dimension, and decoded-image validation rules.
+- `tests/media/manifest.test.ts`: deterministic ordering, duplicate conflict, and metadata-preservation coverage.
+- `tests/media/pipeline-ingest.test.ts`: magic-byte, MIME, byte-size, dimension, and content-deduplication fixtures.
+
+The EmDash adaptation is in `packages/marketing-automation-contracts/src/media-manifest.ts` and uses the existing `MediaSourceRef` shape. It validates lowercase SHA-256 values, safe source paths, supported image extensions and MIME types, bounded bytes/dimensions/pixel count/alt text, optional magic bytes, exact duplicate collapse, conflicting duplicate rejection, and byte-stable metadata serialization. It does not copy Sharp, R2, filesystem traversal, object-key policies, network fetching, or secrets.
+
 ## Growth-OS
 
 `signal-alchemist/Growth-OS` is the candidate source for experiment lifecycle and decision-record semantics. The shared contracts in this PR adopt the reusable domain vocabulary:

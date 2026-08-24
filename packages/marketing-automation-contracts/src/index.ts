@@ -283,3 +283,10 @@ export {
 	validateMetricSnapshot,
 	validateTraceabilityRecord,
 } from "./validators.js";
+
+export {
+	buildMediaManifest,
+	serializeMediaManifest,
+	validateMediaSourceRef,
+	type MediaManifest,
+} from "./media-manifest.js";
