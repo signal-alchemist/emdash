@@ -13,6 +13,9 @@
   "peerDependencies": {
     "emdash": "workspace:>=0.15.0"
   },
+  "dependencies": {
+    "@signal-alchemist/marketing-automation-contracts": "workspace:*"
+  },
   "devDependencies": {
     "jsonc-parser": "catalog:",
     "typescript": "catalog:",

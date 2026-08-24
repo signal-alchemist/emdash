@@ -2289,6 +2289,9 @@ importers:
 
   packages/plugins/sa-analytics-collector:
     dependencies:
+      '@signal-alchemist/marketing-automation-contracts':
+        specifier: workspace:*
+        version: link:../../marketing-automation-contracts
       emdash:
         specifier: workspace:>=0.15.0
         version: link:../../core

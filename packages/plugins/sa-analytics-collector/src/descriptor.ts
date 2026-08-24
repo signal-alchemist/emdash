@@ -2,8 +2,7 @@ import type { PluginDescriptor } from "emdash";
 
 export interface AnalyticsCollectorOptions {
 	enabled?: boolean;
-	maxBatchSize?: number;
-	developmentBufferLimit?: number;
+	endpoint?: string;
 }
 
 export function analyticsCollectorPlugin(

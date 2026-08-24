@@ -1,10 +1,12 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+
 import { parse } from "jsonc-parser";
 import { describe, expect, it } from "vitest";
-import { analyticsCollectorPlugin } from "../src/descriptor.js";
+
 import contentInsightsPlugin from "../../sa-content-insights/src/index.js";
 import githubContentSyncPlugin from "../../sa-github-content-sync/src/index.js";
+import { analyticsCollectorPlugin } from "../src/descriptor.js";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -45,41 +47,54 @@ describe("marketing automation plugin package contracts", () => {
 		expect(descriptor.options).toEqual({});
 	});
 
-	it.each([
-		"../../sa-content-insights/package.json",
-		"../../sa-github-content-sync/package.json",
-	])("publishes a sandbox entrypoint for %s", async (relativePath) => {
-		const manifest = await readPackage(relativePath);
-		const exportsMap = manifest.exports as Record<string, unknown>;
+	it.each(["../../sa-content-insights/package.json", "../../sa-github-content-sync/package.json"])(
+		"publishes a sandbox entrypoint for %s",
+		async (relativePath) => {
+			const manifest = await readPackage(relativePath);
+			const exportsMap = manifest.exports as Record<string, unknown>;
 
-		expect(exportsMap["."]).toBe("./src/index.ts");
-		expect(exportsMap["./sandbox"]).toBe("./src/sandbox-entry.ts");
-	});
+			expect(exportsMap["."]).toBe("./src/index.ts");
+			expect(exportsMap["./sandbox"]).toBe("./src/sandbox-entry.ts");
+		},
+	);
 
 	it.each([
-		["../../sa-content-insights/emdash-plugin.jsonc", "sa-content-insights", ["snapshots", "experiments", "proposals"]],
+		[
+			"../../sa-content-insights/emdash-plugin.jsonc",
+			"sa-content-insights",
+			["snapshots", "experiments", "proposals"],
+		],
 		["../../sa-github-content-sync/emdash-plugin.jsonc", "sa-github-content-sync", ["sync_runs"]],
-	] as const)("validates the authoring manifest for %s", async (relativePath, slug, collections) => {
-		const manifest = await readManifest(relativePath);
-		expect(manifest.slug).toBe(slug);
-		expect(manifest.publisher).toBe("signal-alchemist.github.io");
-		expect(manifest.publisher).not.toBe("did:plc:xyraubanwc5fwemkduw3upi6");
-		expect(Object.keys(manifest.storage as Record<string, unknown>)).toEqual(collections);
-	});
+	] as const)(
+		"validates the authoring manifest for %s",
+		async (relativePath, slug, collections) => {
+			const manifest = await readManifest(relativePath);
+			expect(manifest.slug).toBe(slug);
+			expect(manifest.publisher).toBe("signal-alchemist.github.io");
+			expect(manifest.publisher).not.toBe("did:plc:xyraubanwc5fwemkduw3upi6");
+			expect(Object.keys(manifest.storage as Record<string, unknown>)).toEqual(collections);
+		},
+	);
 
 	it.each([
-		[contentInsightsPlugin, {
-			id: "sa-content-insights",
-			capabilities: ["content:read"],
-			allowedHosts: [],
-			storage: ["snapshots", "experiments", "proposals"],
-		}],
-		[githubContentSyncPlugin, {
-			id: "sa-github-content-sync",
-			capabilities: ["content:write", "media:write", "network:request"],
-			allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
-			storage: ["sync_runs"],
-		}],
+		[
+			contentInsightsPlugin,
+			{
+				id: "sa-content-insights",
+				capabilities: ["content:read"],
+				allowedHosts: [],
+				storage: ["snapshots", "experiments", "proposals"],
+			},
+		],
+		[
+			githubContentSyncPlugin,
+			{
+				id: "sa-github-content-sync",
+				capabilities: ["content:write", "media:write", "network:request"],
+				allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
+				storage: ["sync_runs"],
+			},
+		],
 	] as const)("exposes the standard descriptor trust contract", (factory, expected) => {
 		const descriptor = typeof factory === "function" ? factory() : factory;
 		expect(descriptor).toMatchObject({
