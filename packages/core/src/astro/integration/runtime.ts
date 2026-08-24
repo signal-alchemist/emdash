@@ -163,6 +163,13 @@ export type SandboxedPluginDescriptor<TOptions = Record<string, unknown>> =
 	PluginDescriptor<TOptions>;
 
 export interface EmDashConfig {
+	/** Host-only policy for the signed sa-github-content-sync webhook. */
+	githubContentSync?: {
+		webhookSecretEnv: string;
+		repositories: string[];
+		branches: string[];
+		events: string[];
+	};
 	/**
 	 * Database configuration
 	 *

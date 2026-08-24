@@ -163,3 +163,11 @@ WordPress themes are ported to Astro, and WordPress plugins are either replaced 
 - Rate-limit and batch public collection routes.
 - Record every automated production mutation with source commit and actor.
 - Treat analytics conclusions as uncertain when sample size or attribution quality is insufficient.
+
+### GitHub webhook boundary
+
+Configure the host-side `githubContentSync` policy with an environment-variable name for the webhook secret, exact `owner/repository` values, and full `refs/heads/...` branch values. The host reads the secret at request time, verifies `X-Hub-Signature-256` against the bounded raw request body, and checks the pull-request event policy before dispatching.
+
+The sandbox receives only a normalized delivery record: delivery ID, repository, branch, merge commit SHA, actor ID, pull-request number, and a derived GitHub files URL. It never receives the raw body, signature, or webhook secret. Missing policy or secret configuration rejects the request. The host replay guard bounds and suppresses duplicate dispatches within one runtime, while deterministic storage run IDs make retries converge. The current storage collection has no atomic reservation primitive, so multi-runtime deployments must add a durable reservation adapter before relying on one-dispatch durability; this boundary does not claim that a process-local guard solves that problem.
+
+The verifier adapts constant-time HMAC comparison, replay handling, and allowlist checks from Growth-OS commit `8b1eeabce078f3858fad3d2557f25c12b01ec975` (`apps/web/modules/signal-core/auth.ts`, `webhook-inbox.ts`, and `lib/idempotency.ts`). It does not reuse Growth-OS persistence or secret storage.

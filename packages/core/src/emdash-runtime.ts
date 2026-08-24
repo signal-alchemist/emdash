@@ -213,6 +213,10 @@ import { definePlugin } from "./plugins/define-plugin.js";
 import { DEV_CONSOLE_EMAIL_PLUGIN_ID, devConsoleEmailDeliver } from "./plugins/email-console.js";
 import { EmailPipeline } from "./plugins/email.js";
 import {
+	GithubContentSyncReplayGuard,
+	verifyGithubContentSyncWebhook,
+} from "./plugins/github-content-sync-webhook.js";
+import {
 	createHookPipeline,
 	resolveExclusiveHooks as resolveExclusiveHooksShared,
 	type HookPipeline,
@@ -647,6 +651,7 @@ export class EmDashRuntime {
 	private cronScheduler: CronScheduler | null;
 	private enabledPlugins: Set<string>;
 	private pluginStates: Map<string, string>;
+	private readonly githubWebhookReplay = new GithubContentSyncReplayGuard();
 
 	/**
 	 * Isolate-lifetime guard so FTS indexes are verified at most once per
@@ -4345,6 +4350,32 @@ export class EmDashRuntime {
 				},
 			};
 		}
+	}
+
+	async handleGithubContentSyncWebhook(request: Request) {
+		const policy = this.config.githubContentSync;
+		const secretName = policy?.webhookSecretEnv;
+		const secret =
+			secretName && typeof process !== "undefined" && process.env
+				? process.env[secretName]
+				: undefined;
+		const dispatch = await verifyGithubContentSyncWebhook(request, policy, secret);
+		let result: Awaited<ReturnType<EmDashRuntime["handlePluginApiRoute"]>> | undefined;
+		const accepted = await this.githubWebhookReplay.run(dispatch.deliveryId, async () => {
+			result = await this.handlePluginApiRoute(
+				"sa-github-content-sync",
+				"POST",
+				"/webhook",
+				new Request(request.url, { method: "POST", body: JSON.stringify(dispatch) }),
+			);
+			if (!result || result.success !== true) throw new Error("GITHUB_SYNC_DISPATCH_FAILED");
+		});
+		if (!accepted)
+			return {
+				success: true,
+				data: { accepted: false, reason: "duplicate-delivery", deliveryId: dispatch.deliveryId },
+			};
+		return result;
 	}
 
 	// =========================================================================
