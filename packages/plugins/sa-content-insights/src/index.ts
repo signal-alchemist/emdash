@@ -9,7 +9,7 @@ export function contentInsightsPlugin(): PluginDescriptor {
 		capabilities: ["content:read"],
 		allowedHosts: [],
 		storage: {
-			snapshots: { indexes: ["targetKey", "generatedAt"] },
+			snapshots: { indexes: ["targetKey", "generatedAt", "snapshotId"] },
 			experiments: { indexes: ["targetKey", "status", "updatedAt"] },
 			proposals: { indexes: ["targetKey", "status", "createdAt"] },
 		},

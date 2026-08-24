@@ -95,6 +95,7 @@ function context(
 		queryError?: boolean;
 		badQuery?: boolean;
 		putError?: boolean;
+		returnRecords?: boolean;
 	} = {},
 ) {
 	const records = new Map<string, Record<string, unknown>>();
@@ -111,6 +112,8 @@ function context(
 	const query = vi.fn(async () => {
 		if (options.queryError) throw new Error("query");
 		if (options.badQuery) return null as never;
+		if (options.returnRecords)
+			return { items: Array.from(records.entries(), ([id, data]) => ({ id, data })) };
 		return {
 			items: Array.from({ length: options.count ?? records.size }, (_, index) => ({
 				id: `existing-${index}`,
@@ -715,5 +718,28 @@ describe("content insights snapshot ingestion", () => {
 			b.ctx,
 		);
 		expect(stored(a.put).digest).not.toBe(stored(b.put).digest);
+	});
+	it("round-trips the formal stored shape from ingest into summary", async () => {
+		const shared = context({ returnRecords: true });
+		await ingest({ input: envelope() }, shared.ctx);
+		const summary = (
+			plugin as unknown as {
+				routes: { summary: { handler: (route: unknown, ctx: unknown) => Promise<unknown> } };
+			}
+		).routes.summary.handler;
+		const result = (await summary(
+			{
+				input: {
+					collection: "posts",
+					locale: "en",
+					contentId: "content-alpha",
+					path: "/posts/alpha",
+					window: snapshot.window,
+					limit: 10,
+				},
+			},
+			shared.ctx,
+		)) as Record<string, unknown>;
+		expect(result.summaries).toHaveLength(1);
 	});
 });
