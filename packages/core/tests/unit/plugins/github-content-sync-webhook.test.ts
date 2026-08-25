@@ -65,14 +65,30 @@ describe("verifyGithubContentSyncWebhook", () => {
 	it("does not complete failed dispatches and applies replay capacity", async () => {
 		const guard = new GithubContentSyncReplayGuard(1);
 		let calls = 0;
-		await expect(guard.run("retry", async () => {
-			calls += 1;
-			throw new Error("temporary");
-		})).rejects.toThrow("temporary");
-		expect(await guard.run("retry", async () => { calls += 1; })).toBe(true);
-		expect(await guard.run("retry", async () => { calls += 1; })).toBe(false);
+		await expect(
+			guard.run("retry", async () => {
+				calls += 1;
+				throw new Error("temporary");
+			}),
+		).rejects.toThrow("temporary");
+		expect(
+			await guard.run("retry", async () => {
+				calls += 1;
+			}),
+		).toBe(true);
+		expect(
+			await guard.run("retry", async () => {
+				calls += 1;
+			}),
+		).toBe(false);
 		let release!: () => void;
-		const pending = guard.run("pending", () => new Promise<void>((resolve) => { release = resolve; }));
+		const pending = guard.run(
+			"pending",
+			() =>
+				new Promise<void>((resolve) => {
+					release = resolve;
+				}),
+		);
 		await expect(guard.run("other", async () => {})).rejects.toMatchObject({
 			code: "GITHUB_SYNC_REPLAY_BUSY",
 		});
@@ -131,7 +147,11 @@ describe("verifyGithubContentSyncWebhook", () => {
 			),
 		).rejects.toMatchObject({ code: "GITHUB_SYNC_POLICY_REJECTED" });
 		await expect(
-			verifyGithubContentSyncWebhook(request(payload()), { ...config, events: undefined }, "secret"),
+			verifyGithubContentSyncWebhook(
+				request(payload()),
+				{ ...config, events: undefined },
+				"secret",
+			),
 		).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
 	});
 
@@ -154,9 +174,11 @@ describe("verifyGithubContentSyncWebhook", () => {
 			body: stream,
 			duplex: "half",
 		} as RequestInit);
-		await expect(verifyGithubContentSyncWebhook(oversized, config, "secret")).rejects.toMatchObject({
-			status: 413,
-		});
+		await expect(verifyGithubContentSyncWebhook(oversized, config, "secret")).rejects.toMatchObject(
+			{
+				status: 413,
+			},
+		);
 		expect(cancelled).toBe(true);
 	});
 
@@ -193,26 +215,111 @@ describe("verifyGithubContentSyncWebhook", () => {
 		).rejects.toMatchObject({ code: "GITHUB_SYNC_EVENT_INVALID" });
 	});
 
+	it.each([
+		["string", "42"],
+		["fractional", 1.5],
+		["zero", 0],
+		["negative", -1],
+		["unsafe", Number.MAX_SAFE_INTEGER + 1],
+	])("rejects a %s pull request number", async (_label, number) => {
+		await expect(
+			verifyGithubContentSyncWebhook(
+				request(
+					payload({
+						pull_request: {
+							merged: true,
+							number,
+							merge_commit_sha: "a".repeat(40),
+							base: { ref: "main" },
+						},
+					}),
+				),
+				config,
+				"secret",
+			),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
+	});
+
+	it("accepts the maximum positive safe pull request number", async () => {
+		const result = await verifyGithubContentSyncWebhook(
+			request(
+				payload({
+					pull_request: {
+						merged: true,
+						number: Number.MAX_SAFE_INTEGER,
+						merge_commit_sha: "a".repeat(40),
+						base: { ref: "main" },
+					},
+				}),
+			),
+			config,
+			"secret",
+		);
+		expect(result.pullRequestNumber).toBe(Number.MAX_SAFE_INTEGER);
+		expect(result.filesUrl).toBe(
+			`https://api.github.com/repos/signal-alchemist/site/pulls/${Number.MAX_SAFE_INTEGER}/files`,
+		);
+	});
+
+	it("does not coerce hostile object-valued identity fields", async () => {
+		await expect(
+			verifyGithubContentSyncWebhook(
+				request(
+					payload({
+						pull_request: {
+							merged: true,
+							number: { toString: "42", valueOf: 42 },
+							merge_commit_sha: "a".repeat(40),
+							base: { ref: "main" },
+						},
+						sender: { id: { toString: "7" } },
+					}),
+				),
+				config,
+				"secret",
+			),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
+	});
+
 	it("rejects invalid policy, content type, encoding, and positive identity values", async () => {
-		await expect(verifyGithubContentSyncWebhook(request(payload()), {
-			...config,
-			repositories: ["signal-alchemist/site/extra"],
-		}, "secret")).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
-		await expect(verifyGithubContentSyncWebhook(request(payload()), {
-			...config,
-			branches: ["main"],
-		}, "secret")).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
+		await expect(
+			verifyGithubContentSyncWebhook(
+				request(payload()),
+				{
+					...config,
+					repositories: ["signal-alchemist/site/extra"],
+				},
+				"secret",
+			),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
+		await expect(
+			verifyGithubContentSyncWebhook(
+				request(payload()),
+				{
+					...config,
+					branches: ["main"],
+				},
+				"secret",
+			),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
 		for (const branch of ["refs/heads/.", "refs/heads/main//release", "refs/heads/main/.."])
-			await expect(verifyGithubContentSyncWebhook(request(payload()), {
-				...config,
-				branches: [branch],
-			}, "secret")).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
+			await expect(
+				verifyGithubContentSyncWebhook(
+					request(payload()),
+					{
+						...config,
+						branches: [branch],
+					},
+					"secret",
+				),
+			).rejects.toMatchObject({ code: "GITHUB_SYNC_NOT_CONFIGURED" });
 		const wrongType = request(payload(), { "content-type": "text/plain" });
-		await expect(verifyGithubContentSyncWebhook(wrongType, config, "secret"))
-			.rejects.toMatchObject({ code: "GITHUB_SYNC_BODY_INVALID" });
-		await expect(verifyGithubContentSyncWebhook(
-			request(payload({ sender: { id: 0 } })), config, "secret",
-		)).rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
+		await expect(verifyGithubContentSyncWebhook(wrongType, config, "secret")).rejects.toMatchObject(
+			{ code: "GITHUB_SYNC_BODY_INVALID" },
+		);
+		await expect(
+			verifyGithubContentSyncWebhook(request(payload({ sender: { id: 0 } })), config, "secret"),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
 		const bytes = new Uint8Array([0xff]);
 		const signature = createHmac("sha256", "secret").update(bytes).digest("hex");
 		const invalidUtf8 = new Request("https://site.test/webhook", {
@@ -225,7 +332,8 @@ describe("verifyGithubContentSyncWebhook", () => {
 			},
 			body: bytes,
 		});
-		await expect(verifyGithubContentSyncWebhook(invalidUtf8, config, "secret"))
-			.rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
+		await expect(
+			verifyGithubContentSyncWebhook(invalidUtf8, config, "secret"),
+		).rejects.toMatchObject({ code: "GITHUB_SYNC_PAYLOAD_INVALID" });
 	});
 });

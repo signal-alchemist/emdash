@@ -11,9 +11,10 @@ const MAX_POLICY_ENTRIES = 64;
 
 function isBranchRef(value: string): boolean {
 	if (!BRANCH_REF.test(value)) return false;
-	return value.slice("refs/heads/".length).split("/").every((segment) =>
-		segment.length > 0 && segment !== "." && segment !== "..",
-	);
+	return value
+		.slice("refs/heads/".length)
+		.split("/")
+		.every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
 }
 
 export interface GithubContentSyncWebhookConfig {
@@ -89,10 +90,18 @@ function fail(code: GithubWebhookErrorCode, status: 400 | 401 | 413 | 503 = 400)
 	throw new GithubContentSyncWebhookError(code, status);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+	return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+}
+
 function constantTimeEqual(left: Uint8Array, right: Uint8Array): boolean {
 	if (left.length !== right.length) return false;
 	let difference = 0;
-	for (let index = 0; index < left.length; index += 1) difference |= left[index]! ^ right[index]!;
+	for (let index = 0; index < left.length; index += 1) difference |= left[index] ^ right[index];
 	return difference === 0;
 }
 
@@ -102,6 +111,12 @@ function decodeHex(value: string): Uint8Array | null {
 	for (let index = 0; index < bytes.length; index += 1)
 		bytes[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16);
 	return bytes;
+}
+
+function copyToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	const buffer = new ArrayBuffer(bytes.byteLength);
+	new Uint8Array(buffer).set(bytes);
+	return buffer;
 }
 
 async function verifySignature(
@@ -114,12 +129,14 @@ async function verifySignature(
 	if (!expected) return false;
 	const key = await globalThis.crypto.subtle.importKey(
 		"raw",
-		new TextEncoder().encode(secret),
+		copyToArrayBuffer(new TextEncoder().encode(secret)),
 		{ name: "HMAC", hash: "SHA-256" },
 		false,
 		["sign"],
 	);
-	const actual = new Uint8Array(await globalThis.crypto.subtle.sign("HMAC", key, body));
+	const actual = new Uint8Array(
+		await globalThis.crypto.subtle.sign("HMAC", key, copyToArrayBuffer(body)),
+	);
 	return constantTimeEqual(actual, expected);
 }
 
@@ -173,7 +190,9 @@ export async function verifyGithubContentSyncWebhook(
 		config.repositories.length > MAX_POLICY_ENTRIES ||
 		config.branches.length > MAX_POLICY_ENTRIES ||
 		config.events.length > MAX_POLICY_ENTRIES ||
-		config.repositories.some((repository) => repository.length > 200 || !REPOSITORY_NAME.test(repository)) ||
+		config.repositories.some(
+			(repository) => repository.length > 200 || !REPOSITORY_NAME.test(repository),
+		) ||
 		config.branches.some((branch) => branch.length > 128 || !isBranchRef(branch)) ||
 		config.events.some((event) => event !== "pull_request")
 	)
@@ -196,43 +215,30 @@ export async function verifyGithubContentSyncWebhook(
 	} catch {
 		fail("GITHUB_SYNC_PAYLOAD_INVALID");
 	}
-	if (!payload || typeof payload !== "object") fail("GITHUB_SYNC_PAYLOAD_INVALID");
-	const value = payload as Record<string, unknown>;
+	if (!isRecord(payload)) fail("GITHUB_SYNC_PAYLOAD_INVALID");
+	const value = payload;
 	const repository = value.repository;
 	const pullRequest = value.pull_request;
 	const sender = value.sender;
 	const action = value.action;
-	if (
-		action !== "closed" ||
-		!pullRequest ||
-		typeof pullRequest !== "object" ||
-		(pullRequest as Record<string, unknown>).merged !== true
-	)
+	if (action !== "closed" || !isRecord(pullRequest) || pullRequest.merged !== true)
 		fail("GITHUB_SYNC_POLICY_REJECTED");
-	if (
-		!repository ||
-		typeof repository !== "object" ||
-		typeof (repository as Record<string, unknown>).full_name !== "string"
-	)
+	if (!isRecord(repository) || typeof repository.full_name !== "string")
 		fail("GITHUB_SYNC_PAYLOAD_INVALID");
-	const repositoryName = (repository as Record<string, unknown>).full_name as string;
+	const repositoryName = repository.full_name;
 	if (!config.repositories.includes(repositoryName)) fail("GITHUB_SYNC_POLICY_REJECTED");
-	const base = (pullRequest as Record<string, unknown>).base;
-	const branchName =
-		base && typeof base === "object" ? (base as Record<string, unknown>).ref : undefined;
+	const base = pullRequest.base;
+	const branchName = isRecord(base) ? base.ref : undefined;
 	const branch = typeof branchName === "string" ? `refs/heads/${branchName}` : "";
 	if (!config.branches.includes(branch)) fail("GITHUB_SYNC_POLICY_REJECTED");
-	const commitSha = (pullRequest as Record<string, unknown>).merge_commit_sha;
-	const number = (pullRequest as Record<string, unknown>).number;
+	const commitSha = pullRequest.merge_commit_sha;
+	const number = pullRequest.number;
 	if (
 		typeof commitSha !== "string" ||
 		!COMMIT_SHA.test(commitSha) ||
-		!Number.isSafeInteger(number) ||
-		number < 1 ||
-		!sender ||
-		typeof sender !== "object" ||
-		!Number.isSafeInteger((sender as Record<string, unknown>).id) ||
-		((sender as Record<string, unknown>).id as number) < 1
+		!isPositiveSafeInteger(number) ||
+		!isRecord(sender) ||
+		!isPositiveSafeInteger(sender.id)
 	)
 		fail("GITHUB_SYNC_PAYLOAD_INVALID");
 	return {
@@ -241,7 +247,7 @@ export async function verifyGithubContentSyncWebhook(
 		repository: repositoryName,
 		branch,
 		commitSha: commitSha.toLowerCase(),
-		actorId: String((sender as Record<string, unknown>).id),
+		actorId: String(sender.id),
 		pullRequestNumber: number,
 		filesUrl: `https://api.github.com/repos/${repositoryName}/pulls/${number}/files`,
 	};
