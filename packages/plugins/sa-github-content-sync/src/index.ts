@@ -6,9 +6,12 @@ export function githubContentSyncPlugin(): PluginDescriptor {
 		version: "0.1.0",
 		format: "standard",
 		entrypoint: "@signal-alchemist/emdash-plugin-github-content-sync/sandbox",
-		capabilities: ["content:write", "media:write", "network:request"],
+		capabilities: ["content:write", "media:read", "media:write", "network:request"],
 		allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
 		storage: {
+			sync_receipts: {
+				indexes: ["deliveryId", "commitSha", "planDigest", "state", "createdAt", "trustedActorId"],
+			},
 			sync_runs: {
 				indexes: ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"],
 			},

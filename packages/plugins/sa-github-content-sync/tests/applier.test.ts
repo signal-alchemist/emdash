@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { applySyncPlan } from "../src/applier.js";
 import { buildSyncPlan, hexDigest, stableStringify } from "../src/planner.js";
+import { prepareSyncReceipt } from "../src/receipts.js";
 
 const sha = "a".repeat(40);
 const repository = "signal-alchemist/site";
@@ -124,7 +125,213 @@ function storage() {
 	};
 }
 
+function receiptStorage() {
+	const rows = new Map<string, unknown>();
+	return {
+		rows,
+		get: vi.fn(async (id: string) => (rows.has(id) ? { id, data: rows.get(id) } : null)),
+		create: vi.fn(async (id: string, data: unknown) => {
+			if (rows.has(id)) return false;
+			rows.set(id, structuredClone(data));
+			return true;
+		}),
+		put: vi.fn(async (id: string, data: unknown) => {
+			rows.set(id, structuredClone(data));
+		}),
+		delete: vi.fn(async (id: string) => rows.delete(id)),
+		query: vi.fn(async () => ({
+			items: Array.from(rows.entries(), ([id, data]) => ({ id, data })),
+		})),
+	};
+}
+
 describe("applySyncPlan", () => {
+	it("allows exactly one durable mutator across isolated contexts without time takeover", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		let release!: () => void;
+		let entered!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const started = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		const final = {
+			id: "row-1",
+			data: plan.commands[0]!.fields,
+			revision: "rev-2",
+			status: "published",
+		};
+		const content = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => final),
+			create: vi.fn(async () => {
+				entered();
+				await gate;
+				return { ...final, revision: "rev-1", status: "draft" };
+			}),
+			update: vi.fn(),
+			publish: vi.fn(async () => final),
+			unpublish: vi.fn(),
+		};
+		vi.resetModules();
+		const left = await import("../src/applier.js");
+		vi.resetModules();
+		const right = await import("../src/applier.js");
+		const context = { storage: { ...store, sync_receipts: receipts }, content } as never;
+		const winner = left.applySyncPlan(plan, context);
+		await started;
+		await expect(right.applySyncPlan(plan, context)).rejects.toThrow("RECEIPT_IN_PROGRESS");
+		release();
+		expect((await winner).status).toBe("succeeded");
+		expect(content.create).toHaveBeenCalledTimes(1);
+	});
+
+	it("rejects a conflicting prepared receipt before mutation", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		const prepared = await prepareSyncReceipt(plan, plan.trace.actorId);
+		prepared.operations[0]!.intendedDigest = "0".repeat(64);
+		await receipts.put(prepared.receiptId, prepared);
+		const content = {
+			list: vi.fn(),
+			get: vi.fn(),
+			create: vi.fn(),
+			update: vi.fn(),
+			publish: vi.fn(),
+			unpublish: vi.fn(),
+		};
+		await expect(
+			applySyncPlan(plan, { storage: { ...store, sync_receipts: receipts }, content } as never),
+		).rejects.toThrow("RECEIPT_IDENTITY");
+		expect(content.create).not.toHaveBeenCalled();
+	});
+
+	it("persists a verified receipt only after canonical production read-back", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		let current = {
+			id: "row-1",
+			data: plan.commands[0]!.fields,
+			revision: "rev-2",
+			status: "published",
+		};
+		const content = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => current),
+			create: vi.fn(async () => ({ ...current, revision: "rev-1", status: "draft" })),
+			update: vi.fn(),
+			publish: vi.fn(async () => current),
+			unpublish: vi.fn(async () => {
+				current = { ...current, revision: "rev-3", status: "unpublished" };
+				return current;
+			}),
+		};
+		const result = await applySyncPlan(plan, {
+			storage: { ...store, sync_receipts: receipts },
+			content,
+		} as never);
+		expect(result.status).toBe("succeeded");
+		const receiptId = `${plan.trace.deliveryId}:${plan.commitSha}:${plan.planDigest}`;
+		expect((receipts.rows.get(receiptId) as { state: string }).state).toBe("rollback-eligible");
+	});
+
+	it("records an explicit failure when production content differs from intent", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		const content = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => ({
+				id: "row-1",
+				data: { ...plan.commands[0]!.fields, title: "tampered" },
+				revision: "rev-2",
+				status: "published",
+			})),
+			create: vi.fn(async () => ({
+				id: "row-1",
+				data: plan.commands[0]!.fields,
+				revision: "rev-1",
+				status: "draft",
+			})),
+			update: vi.fn(),
+			publish: vi.fn(async () => ({
+				id: "row-1",
+				data: plan.commands[0]!.fields,
+				revision: "rev-2",
+				status: "published",
+			})),
+			unpublish: vi.fn(),
+		};
+		expect(
+			(
+				await applySyncPlan(plan, {
+					storage: { ...store, sync_receipts: receipts },
+					content,
+				} as never)
+			).status,
+		).toBe("failed");
+		const receiptId = `${plan.trace.deliveryId}:${plan.commitSha}:${plan.planDigest}`;
+		expect((receipts.rows.get(receiptId) as { state: string }).state).toBe("verification-failed");
+	});
+
+	it("does not mutate when receipt preparation cannot be persisted", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		receipts.create.mockRejectedValueOnce(new Error("receipt unavailable"));
+		const content = {
+			list: vi.fn(),
+			get: vi.fn(),
+			create: vi.fn(),
+			update: vi.fn(),
+			publish: vi.fn(),
+			unpublish: vi.fn(),
+		};
+		await expect(
+			applySyncPlan(plan, { storage: { ...store, sync_receipts: receipts }, content } as never),
+		).rejects.toThrow("receipt unavailable");
+		expect(content.create).not.toHaveBeenCalled();
+	});
+
+	it("never reports success when post-apply receipt persistence fails", async () => {
+		const plan = await makePlan();
+		const store = storage();
+		const receipts = receiptStorage();
+		const originalPut = receipts.put;
+		receipts.put = vi.fn(async (id: string, data: unknown) => {
+			if (receipts.put.mock.calls.length === 2) throw new Error("post receipt unavailable");
+			return originalPut(id, data);
+		});
+		const current = {
+			id: "row-1",
+			data: plan.commands[0]!.fields,
+			revision: "rev-2",
+			status: "published",
+		};
+		const content = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => current),
+			create: vi.fn(async () => ({ ...current, revision: "rev-1", status: "draft" })),
+			update: vi.fn(),
+			publish: vi.fn(async () => current),
+			unpublish: vi.fn(),
+		};
+		expect(
+			(
+				await applySyncPlan(plan, {
+					storage: { ...store, sync_receipts: receipts },
+					content,
+				} as never)
+			).status,
+		).toBe("failed");
+		expect(content.create).toHaveBeenCalledTimes(1);
+	});
+
 	it("creates, fences publication, checkpoints, and skips an exact replay", async () => {
 		const plan = await makePlan();
 		const store = storage();
@@ -434,18 +641,31 @@ describe("applySyncPlan", () => {
 			async (_url: string) => new Response(png, { headers: { "content-type": "image/png" } }),
 		);
 		const store = storage();
+		const receipts = receiptStorage();
+		const persistedData = { ...plan.commands[0]!.fields, mediaIds: ["media-1"] };
 		const content = {
 			list: vi.fn(async () => ({ items: [] })),
-			get: vi.fn(async () => ({ id: "row-1", data: {}, revision: "rev-2" })),
+			get: vi.fn(async () => ({
+				id: "row-1",
+				data: persistedData,
+				revision: "rev-2",
+				status: "published",
+			})),
 			create: vi.fn(async (_collection: string, fields: Record<string, unknown>) => {
 				expect(fields.mediaIds).toEqual(["media-1"]);
 				return { id: "row-1", data: fields, revision: "rev-1" };
 			}),
 			update: vi.fn(),
-			publish: vi.fn(async () => ({ id: "row-1", data: {}, revision: "rev-2" })),
+			publish: vi.fn(async () => ({
+				id: "row-1",
+				data: persistedData,
+				revision: "rev-2",
+				status: "published",
+			})),
 			unpublish: vi.fn(),
 		};
 		const mediaAccess = {
+			get: vi.fn(async () => ({ id: "media-1", sha256: media.sha256 })),
 			upload: vi.fn(async () => ({
 				mediaId: "media-1",
 				storageKey: "media-1.png",
@@ -453,7 +673,7 @@ describe("applySyncPlan", () => {
 			})),
 		};
 		await applySyncPlan(plan, {
-			storage: store,
+			storage: { ...store, sync_receipts: receipts },
 			content,
 			media: mediaAccess,
 			http: { fetch },
@@ -468,6 +688,23 @@ describe("applySyncPlan", () => {
 			expect.any(ArrayBuffer),
 			expect.objectContaining({ deduplicate: true }),
 		);
+		expect(mediaAccess.get).toHaveBeenCalledWith("media-1");
+		const mismatchedStore = storage();
+		const mismatchedReceipts = receiptStorage();
+		const mismatchedMedia = {
+			...mediaAccess,
+			get: vi.fn(async () => ({ id: "media-1", sha256: "0".repeat(64) })),
+		};
+		expect(
+			(
+				await applySyncPlan(plan, {
+					storage: { ...mismatchedStore, sync_receipts: mismatchedReceipts },
+					content,
+					media: mismatchedMedia,
+					http: { fetch },
+				} as never)
+			).status,
+		).toBe("failed");
 	});
 
 	it("fails closed on corrupt replay records without returning stored secrets", async () => {

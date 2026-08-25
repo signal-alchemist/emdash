@@ -149,6 +149,7 @@ interface BridgeMediaItem {
 	size: number | null;
 	url: string;
 	createdAt: string;
+	sha256: string | null;
 }
 
 /**

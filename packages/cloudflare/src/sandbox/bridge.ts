@@ -22,6 +22,7 @@ import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 
 import { sandboxHttpFetch } from "./bridge-http.js";
+import { mediaSha256 } from "./media-sha256.js";
 import {
 	assertStorageCollectionDeclared,
 	storageCreate as createStorageRow,
@@ -832,6 +833,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		size: number | null;
 		url: string;
 		createdAt: string;
+		sha256: string | null;
 	} | null> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("media:read")) {
@@ -844,6 +846,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: number | null;
 			storage_key: string;
 			created_at: string;
+			sha256: string | null;
 		}>();
 		if (!result) return null;
 		return {
@@ -853,6 +856,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: result.size,
 			url: `/_emdash/api/media/file/${result.storage_key}`,
 			createdAt: result.created_at,
+			sha256: result.sha256,
 		};
 	}
 
@@ -864,6 +868,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: number | null;
 			url: string;
 			createdAt: string;
+			sha256: string | null;
 		}>;
 		cursor?: string;
 		hasMore: boolean;
@@ -899,6 +904,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 				size: number | null;
 				storage_key: string;
 				created_at: string;
+				sha256: string | null;
 			}>();
 
 		const rows = results.results ?? [];
@@ -910,6 +916,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: row.size,
 			url: `/_emdash/api/media/file/${row.storage_key}`,
 			createdAt: row.created_at,
+			sha256: row.sha256,
 		}));
 		const hasMore = rows.length > limit;
 
@@ -962,6 +969,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		// Flat storage key matching core convention: ${ulid}${ext}
 		const storageKey = `${mediaId}${ext}`;
 		const now = new Date().toISOString();
+		const sha256 = await mediaSha256(bytes);
 
 		// Write bytes to R2 first, then create DB record.
 		// If DB insert fails, clean up the R2 object to prevent orphans.
@@ -972,9 +980,9 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		try {
 			// Create confirmed media record with ISO timestamp (matching core)
 			await this.env.DB.prepare(
-				"INSERT INTO media (id, filename, mime_type, size, storage_key, status, created_at) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
+				"INSERT INTO media (id, filename, mime_type, size, storage_key, status, created_at, sha256) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?)",
 			)
-				.bind(mediaId, filename, contentType, bytes.byteLength, storageKey, now)
+				.bind(mediaId, filename, contentType, bytes.byteLength, storageKey, now, sha256)
 				.run();
 		} catch (error) {
 			// Clean up R2 object on DB failure to prevent orphans

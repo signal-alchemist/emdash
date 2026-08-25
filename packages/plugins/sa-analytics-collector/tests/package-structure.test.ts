@@ -78,7 +78,7 @@ describe("marketing automation plugin package contracts", () => {
 		[
 			"../../sa-github-content-sync/emdash-plugin.jsonc",
 			"sa-github-content-sync",
-			["sync_runs", "sync_mappings", "sync_attempts"],
+			["sync_receipts", "sync_runs", "sync_mappings", "sync_attempts"],
 		],
 	] as const)(
 		"validates the authoring manifest for %s",
@@ -118,9 +118,9 @@ describe("marketing automation plugin package contracts", () => {
 			githubContentSyncPlugin,
 			{
 				id: "sa-github-content-sync",
-				capabilities: ["content:write", "media:write", "network:request"],
+				capabilities: ["content:write", "media:read", "media:write", "network:request"],
 				allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
-				storage: ["sync_runs", "sync_mappings", "sync_attempts"],
+				storage: ["sync_receipts", "sync_runs", "sync_mappings", "sync_attempts"],
 			},
 		],
 	] as const)("exposes the standard descriptor trust contract", (factory, expected) => {

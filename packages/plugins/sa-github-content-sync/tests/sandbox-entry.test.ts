@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
-import plugin, { readVerifiedWebhook } from "../src/sandbox-entry.js";
 import { createAttempt, transitionAttempt } from "../src/audit.js";
+import plugin, { readVerifiedWebhook } from "../src/sandbox-entry.js";
 
 const valid = {
 	deliveryId: "delivery-1",
@@ -209,6 +209,28 @@ describe("readVerifiedWebhook", () => {
 	});
 });
 
+describe("receipt rollback actor boundary", () => {
+	it("requires the authenticated actor", async () => {
+		await expect(
+			plugin.routes.rollback.handler({ input: { receiptId: "receipt-1", rationale: "reviewed" } }, {
+				storage: {},
+			} as never),
+		).rejects.toThrow("GITHUB_SYNC_RECEIPT_ACTOR_REQUIRED");
+	});
+
+	it("rejects a client actor that differs from the authenticated session", async () => {
+		await expect(
+			plugin.routes.rollback.handler(
+				{
+					input: { receiptId: "receipt-1", reviewedBy: "attacker", rationale: "reviewed" },
+					user: { id: "trusted-reviewer" },
+				} as never,
+				{ storage: {} } as never,
+			),
+		).rejects.toThrow("GITHUB_SYNC_RECEIPT_ACTOR_MISMATCH");
+	});
+});
+
 describe("attempt route input and policy boundaries", () => {
 	it.each([
 		["array", []],
@@ -309,7 +331,7 @@ describe("attempt route input and policy boundaries", () => {
 				},
 				put: writes,
 				delete: async () => true,
-			query: async () => ({ items: [], hasMore: false }),
+				query: async () => ({ items: [], hasMore: false }),
 			},
 			sync_runs: {
 				get: async (id: string) => (runs.has(id) ? { id, data: runs.get(id) } : null),
@@ -322,43 +344,99 @@ describe("attempt route input and policy boundaries", () => {
 				query: async () => ({ items: [] }),
 			},
 		};
-		const seeded = await createAttempt({ storage } as never, { ...valid, attemptId: "attempt-success" });
+		const seeded = await createAttempt({ storage } as never, {
+			...valid,
+			attemptId: "attempt-success",
+		});
 		await transitionAttempt({ storage } as never, seeded.attemptId, "failed", {
 			errorCode: "ATTEMPT_FAILED",
 		});
 		const fetch = vi.fn(async (url: string) => {
 			if (url.includes("/git/trees/"))
-				return new Response(JSON.stringify({ tree: [
-					{ path: "content/post.md", type: "blob", sha: "b".repeat(40) },
-					{ path: "content-manifest.json", type: "blob", sha: "c".repeat(40) },
-					{ path: "media-manifest.json", type: "blob", sha: "d".repeat(40) },
-				] }), { headers: { "content-type": "application/json" } });
+				return new Response(
+					JSON.stringify({
+						tree: [
+							{ path: "content/post.md", type: "blob", sha: "b".repeat(40) },
+							{ path: "content-manifest.json", type: "blob", sha: "c".repeat(40) },
+							{ path: "media-manifest.json", type: "blob", sha: "d".repeat(40) },
+						],
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
 			if (url.endsWith("content-manifest.json"))
-				return new Response(JSON.stringify({ identityManifest: { schemaVersion: 1, siteId: "site", entries: [{
-					contentId: "content-launch", locale: "en", source: { repository: valid.repository, branch: valid.branch, path: "content/post.md", commitSha: valid.commitSha }, kind: "post", revision: 1, canonicalRoute: "/posts/launch/",
-				}] }, documents: [{ source: { path: "content/post.md" }, locale: "en", kind: "post", contentId: "content-launch", canonical: "/posts/launch/" }] }), { headers: { "content-type": "application/json" } });
-			if (url.endsWith("media-manifest.json")) return new Response(JSON.stringify({ schemaVersion: 1, media: [] }), { headers: { "content-type": "application/json" } });
-			return new Response("---\ncontentId: content-launch\nlocale: en\ntype: post\ncanonicalRoute: /posts/launch/\ntitle: Launch\nslug: launch\npublishState: draft\nupdatedAt: 2026-08-25T00:00:00.000Z\n---\nLaunch", { headers: { "content-type": "text/plain" } });
+				return new Response(
+					JSON.stringify({
+						identityManifest: {
+							schemaVersion: 1,
+							siteId: "site",
+							entries: [
+								{
+									contentId: "content-launch",
+									locale: "en",
+									source: {
+										repository: valid.repository,
+										branch: valid.branch,
+										path: "content/post.md",
+										commitSha: valid.commitSha,
+									},
+									kind: "post",
+									revision: 1,
+									canonicalRoute: "/posts/launch/",
+								},
+							],
+						},
+						documents: [
+							{
+								source: { path: "content/post.md" },
+								locale: "en",
+								kind: "post",
+								contentId: "content-launch",
+								canonical: "/posts/launch/",
+							},
+						],
+					}),
+					{ headers: { "content-type": "application/json" } },
+				);
+			if (url.endsWith("media-manifest.json"))
+				return new Response(JSON.stringify({ schemaVersion: 1, media: [] }), {
+					headers: { "content-type": "application/json" },
+				});
+			return new Response(
+				"---\ncontentId: content-launch\nlocale: en\ntype: post\ncanonicalRoute: /posts/launch/\ntitle: Launch\nslug: launch\npublishState: draft\nupdatedAt: 2026-08-25T00:00:00.000Z\n---\nLaunch",
+				{ headers: { "content-type": "text/plain" } },
+			);
 		});
 		const content = {
 			list: async () => ({ items: [] }),
-			create: vi.fn(async () => ({ id: "row-1", data: { contentId: "content-launch" }, revision: "rev-1" })),
+			create: vi.fn(async () => ({
+				id: "row-1",
+				data: { contentId: "content-launch" },
+				revision: "rev-1",
+			})),
 			publish: async () => ({ id: "row-1", data: {}, revision: "rev-2" }),
 			get: async () => null,
 			update: async () => ({ id: "row-1", data: {}, revision: "rev-2" }),
 			unpublish: async () => ({ id: "row-1", data: {}, revision: "rev-2" }),
 		};
 		const result = await plugin.routes.retry.handler(
-			{ input: { attemptId: seeded.attemptId, idempotencyKey: "route-success" }, user: { id: "7" } },
-			{ storage, http: { fetch }, content, kv: { get: vi.fn(async () => ({ repository: valid.repository, branch: valid.branch })) } } as never,
+			{
+				input: { attemptId: seeded.attemptId, idempotencyKey: "route-success" },
+				user: { id: "7" },
+			},
+			{
+				storage,
+				http: { fetch },
+				content,
+				kv: { get: vi.fn(async () => ({ repository: valid.repository, branch: valid.branch })) },
+			} as never,
 		);
 		expect(result).toMatchObject({ attempt: { state: "succeeded" } });
 		expect(fetch).toHaveBeenCalledTimes(4);
 		expect(content.create).toHaveBeenCalledTimes(1);
 		expect(attempts.get(`${seeded.attemptId}:route-success`)).toMatchObject({
-		state: "succeeded",
-		result: expect.any(Object),
-	});
+			state: "succeeded",
+			result: expect.any(Object),
+		});
 	});
 
 	it("rejects a mismatched resolution reviewer before doing work", async () => {
@@ -401,16 +479,21 @@ describe("attempt route input and policy boundaries", () => {
 		await expect(
 			plugin.routes.retry.handler(
 				{ input: { attemptId: "a", idempotencyKey: "b", [Symbol("x")]: true }, user: { id: "7" } },
-				{ storage: { sync_attempts: {} }, kv: { get: vi.fn(async () => null) }, http: { fetch: work } } as never,
+				{
+					storage: { sync_attempts: {} },
+					kv: { get: vi.fn(async () => null) },
+					http: { fetch: work },
+				} as never,
 			),
 		).rejects.toThrow("ATTEMPT_INPUT_INVALID");
 		expect(getter).not.toHaveBeenCalled();
 		expect(work).not.toHaveBeenCalled();
 		await expect(
-			plugin.routes.retry.handler(
-				{ input: null, user: { id: "7" } },
-				{ storage: { sync_attempts: {} }, kv, http: { fetch: work } } as never,
-			),
+			plugin.routes.retry.handler({ input: null, user: { id: "7" } }, {
+				storage: { sync_attempts: {} },
+				kv,
+				http: { fetch: work },
+			} as never),
 		).rejects.toThrow("ATTEMPT_INPUT_INVALID");
 	});
 });

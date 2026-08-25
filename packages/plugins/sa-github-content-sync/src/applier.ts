@@ -6,7 +6,16 @@ import {
 	type MediaSourceRef,
 } from "@signal-alchemist/marketing-automation-contracts";
 
-import { hexDigest, type SyncPlan, validateSyncPlan } from "./planner.js";
+import { hexDigest, stableStringify, type SyncPlan, validateSyncPlan } from "./planner.js";
+import {
+	contentHash,
+	prepareSyncReceipt,
+	persistSyncReceipt,
+	readSyncReceipt,
+	updateSyncReceipt,
+	type ReceiptCollection,
+	type SyncReceipt,
+} from "./receipts.js";
 
 const MAX_COMMANDS = 512;
 const MAX_WARNINGS = 128;
@@ -82,6 +91,7 @@ type ContentAccessWithWrite = {
 	): Promise<ContentItem>;
 };
 type MediaAccessWithWrite = {
+	get(id: string): Promise<{ id: string; sha256?: string | null } | null>;
 	upload(
 		filename: string,
 		contentType: string,
@@ -96,6 +106,7 @@ export type ApplyContext = {
 	media?: MediaAccessWithWrite;
 	http?: { fetch(url: string, init?: RequestInit): Promise<Response> };
 	storage: {
+		sync_receipts?: ReceiptCollection;
 		sync_runs: {
 			get(id: string): Promise<{ id: string; data: unknown } | null>;
 			put(id: string, data: unknown): Promise<void>;
@@ -444,6 +455,37 @@ async function applyValidatedPlan(
 ): Promise<ContentSyncApplyResult> {
 	if (plan.commands.length > MAX_COMMANDS) fail("LIMIT");
 	const key = `${plan.trace.deliveryId}:${plan.commitSha}:${plan.planDigest}`;
+	let receipt: SyncReceipt | undefined;
+	let applyClaimId: string | undefined;
+	if (ctx.storage.sync_receipts) {
+		receipt = await prepareSyncReceipt(plan, plan.trace.actorId);
+		const won = await persistSyncReceipt(ctx.storage.sync_receipts, receipt);
+		if (!won) {
+			const existing = await readSyncReceipt(ctx.storage.sync_receipts, receipt.receiptId);
+			if (!existing) fail("RECEIPT_PERSISTENCE");
+			if (
+				existing.planDigest !== plan.planDigest ||
+				existing.trustedActorId !== plan.trace.actorId ||
+				stableStringify(
+					existing.operations.map(
+						({ pre: _pre, post: _post, rollback: _rollback, media: _media, ...operation }) =>
+							operation,
+					),
+				) !== stableStringify(receipt.operations)
+			)
+				fail("RECEIPT_IDENTITY");
+			receipt = existing;
+		}
+		if (receipt.state === "prepared" || receipt.state === "verification-failed") {
+			const claimDigest = await contentHash({ receiptId: receipt.receiptId });
+			applyClaimId = `apply:${claimDigest}`;
+			const claimed = await ctx.storage.sync_receipts.create(applyClaimId, {
+				kind: "apply-claim",
+				receiptId: receipt.receiptId,
+			});
+			if (!claimed) fail("RECEIPT_IN_PROGRESS");
+		}
+	}
 	const prior = await ctx.storage.sync_runs.get(key);
 	if (prior?.data && typeof prior.data === "object") {
 		const record = readRunRecord(prior.data);
@@ -484,6 +526,24 @@ async function applyValidatedPlan(
 			try {
 				const command = plan.commands[index]!;
 				const mapping = await findMapping(ctx, command);
+				if (receipt && ctx.storage.sync_receipts) {
+					const operation = receipt.operations[index];
+					if (operation && mapping && ctx.content) {
+						const before = await ctx.content.get(mapping.collection, mapping.emdashId);
+						if (!before || before.revision !== mapping.revision) fail("MAPPING_CONFLICT");
+						operation.pre = {
+							id: before.id,
+							revision: before.revision,
+							hash: await contentHash(before.data),
+							status: before.status,
+						};
+						operation.rollback = { data: before.data, publication: before.status ?? "draft" };
+					}
+					await updateSyncReceipt(ctx.storage.sync_receipts, {
+						...receipt,
+						updatedAt: new Date().toISOString(),
+					});
+				}
 				const applied = await applyCommand(
 					plan,
 					ctx,
@@ -492,6 +552,25 @@ async function applyValidatedPlan(
 					record.uploadedMediaIds,
 					mapping,
 				);
+				if (receipt && applied.item && ctx.content) {
+					const verified = await ctx.content.get(command.collection, applied.item.id);
+					if (
+						!verified ||
+						verified.id !== applied.item.id ||
+						(verified.revision &&
+							applied.item.revision &&
+							verified.revision !== applied.item.revision)
+					)
+						fail("VERIFY_READBACK");
+					const observedFields = Object.fromEntries(
+						Object.keys(command.fields).map((field) => [field, verified.data[field]]),
+					);
+					if ((await contentHash(observedFields)) !== (await contentHash(command.fields)))
+						fail("VERIFY_CONTENT_HASH");
+					if ((command.publishState === "published") !== (verified.status === "published"))
+						fail("VERIFY_PUBLICATION");
+					applied.item = verified ?? applied.item;
+				}
 				const result = applied.result;
 				record.results.push(result);
 				record.completed.push(index);
@@ -500,6 +579,40 @@ async function applyValidatedPlan(
 						mappingKey(command),
 						mappingFor(command, applied.item, plan, result.uploadedMediaIds),
 					);
+				if (receipt && applied.item && ctx.storage.sync_receipts) {
+					const operation = receipt.operations[index];
+					if (operation) {
+						operation.post = {
+							id: applied.item.id,
+							revision: applied.item.revision,
+							hash: await contentHash(applied.item.data),
+							status: applied.item.status,
+						};
+						if (result.uploadedMediaIds.length > 0) {
+							if (!ctx.media) fail("MEDIA_CAPABILITY");
+							if (result.uploadedMediaIds.length !== command.media.length)
+								fail("MEDIA_VERIFY_COUNT");
+							operation.media = [];
+							for (
+								let mediaIndex = 0;
+								mediaIndex < result.uploadedMediaIds.length;
+								mediaIndex += 1
+							) {
+								const id = result.uploadedMediaIds[mediaIndex]!;
+								const expected = command.media[mediaIndex]?.sha256;
+								const persisted = await ctx.media.get(id);
+								if (!persisted || persisted.id !== id || !expected || persisted.sha256 !== expected)
+									fail("MEDIA_VERIFY");
+								operation.media.push({ id, sha256: expected });
+							}
+						}
+					}
+					await updateSyncReceipt(ctx.storage.sync_receipts, {
+						...receipt,
+						state: "prepared",
+						updatedAt: new Date().toISOString(),
+					});
+				}
 				if (mapping && mapping.sourceKey !== mappingKey(command))
 					await ctx.storage.sync_mappings.delete(mapping.sourceKey);
 				await ctx.storage.sync_runs.put(key, record);
@@ -518,6 +631,16 @@ async function applyValidatedPlan(
 				if (record.uploadedMediaIds.length > 0 && record.warnings.length < MAX_WARNINGS)
 					record.warnings.push("uploaded-media-unlinked");
 				await ctx.storage.sync_runs.put(key, record);
+				if (receipt && ctx.storage.sync_receipts) {
+					receipt = {
+						...receipt,
+						state: "verification-failed",
+						verification: { checkedAt: new Date().toISOString(), code: stableErrorCode(error) },
+						updatedAt: new Date().toISOString(),
+					};
+					await updateSyncReceipt(ctx.storage.sync_receipts, receipt);
+					if (applyClaimId) await ctx.storage.sync_receipts.delete(applyClaimId);
+				}
 				return {
 					version: 1,
 					planDigest: plan.planDigest,
@@ -561,6 +684,16 @@ async function applyValidatedPlan(
 			record.status = "conflict";
 			if (record.warnings.length < MAX_WARNINGS) record.warnings.push("revision-conflict");
 			await ctx.storage.sync_runs.put(key, record);
+			if (receipt && ctx.storage.sync_receipts) {
+				receipt = {
+					...receipt,
+					state: "verification-failed",
+					verification: { checkedAt: new Date().toISOString(), code: "REVISION_CONFLICT" },
+					updatedAt: new Date().toISOString(),
+				};
+				await updateSyncReceipt(ctx.storage.sync_receipts, receipt);
+				if (applyClaimId) await ctx.storage.sync_receipts.delete(applyClaimId);
+			}
 			return {
 				version: 1,
 				planDigest: plan.planDigest,
@@ -572,6 +705,17 @@ async function applyValidatedPlan(
 		}
 		record.status = "succeeded";
 		await ctx.storage.sync_runs.put(key, record);
+		if (receipt && ctx.storage.sync_receipts) {
+			receipt = {
+				...receipt,
+				state: "verified",
+				verification: { checkedAt: new Date().toISOString() },
+				updatedAt: new Date().toISOString(),
+			};
+			await updateSyncReceipt(ctx.storage.sync_receipts, receipt);
+			receipt = { ...receipt, state: "rollback-eligible", updatedAt: new Date().toISOString() };
+			await updateSyncReceipt(ctx.storage.sync_receipts, receipt);
+		}
 		return {
 			version: 1,
 			planDigest: plan.planDigest,
@@ -583,6 +727,8 @@ async function applyValidatedPlan(
 	} catch (error) {
 		record.status = "failed";
 		await ctx.storage.sync_runs.put(key, record);
+		if (applyClaimId && ctx.storage.sync_receipts)
+			await ctx.storage.sync_receipts.delete(applyClaimId);
 		throw error;
 	}
 }

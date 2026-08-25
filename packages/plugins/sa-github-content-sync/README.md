@@ -8,6 +8,8 @@ Sandboxed EmDash plugin for revision-safe synchronization of Git-authored articl
 - validate repository, branch, delivery ID, commit SHA, and source catalog;
 - deduplicate deliveries and uploaded media;
 - create/update content using an expected EmDash revision;
+- verify persisted content and media identity/hash after every apply;
+- retain bounded durable apply receipts and revision-fenced human rollback receipts;
 - record conflicts instead of overwriting manual production edits;
 - provide delivery status and retry information in EmDash admin.
 
@@ -19,10 +21,11 @@ Sandboxed EmDash plugin for revision-safe synchronization of Git-authored articl
 - deploying LP code;
 - deleting production content merely because a source file disappeared.
 
-## Planned capabilities
+## Capabilities
 
 - `content:write`
+- `media:read` for persisted SHA-256 verification
 - `media:write`
 - `network:request` limited to GitHub API/content hosts
 
-The initial source is a compile-oriented skeleton. Webhook signature verification, schema validation, and EmDash content/media mutations are implementation tasks tracked in the Codex review issue.
+Rollback never deletes newly created content. It moves the verified post-state to a non-public state; updates restore receipt-backed prior fields only when the current revision still equals the verified post revision. A trusted reviewer and bounded rationale are required.

@@ -10,6 +10,14 @@ import {
 	type AttemptContext,
 } from "./audit.js";
 import { buildSyncPlan, validateSyncPlan } from "./planner.js";
+import {
+	listSyncReceipts,
+	readSyncReceipt,
+	rollbackSyncReceipt,
+	toReceiptView,
+	type ReceiptCollection,
+	type ReceiptContent,
+} from "./receipts.js";
 
 type StagedSync = {
 	deliveryId: string;
@@ -406,6 +414,61 @@ export default {
 						},
 					} as AttemptContext,
 					input,
+				);
+			},
+		},
+		receipts: {
+			public: false,
+			permission: "plugins:manage",
+			handler: async (routeCtx, ctx) =>
+				listSyncReceipts(
+					(ctx.storage as unknown as { sync_receipts: ReceiptCollection }).sync_receipts,
+					readAttemptListInput(routeCtx.input),
+				),
+		},
+		receipt: {
+			public: false,
+			permission: "plugins:manage",
+			handler: async (routeCtx, ctx) => {
+				const input = exactObject(routeCtx.input, ["receiptId"]);
+				if (typeof input.receiptId !== "string") throw new Error("GITHUB_SYNC_RECEIPT_ID");
+				const receipt = await readSyncReceipt(
+					(ctx.storage as unknown as { sync_receipts: ReceiptCollection }).sync_receipts,
+					input.receiptId,
+				);
+				if (!receipt) throw new Error("GITHUB_SYNC_RECEIPT_NOT_FOUND");
+				return toReceiptView(receipt);
+			},
+		},
+		rollback: {
+			public: false,
+			permission: "plugins:manage",
+			handler: async (routeCtx, ctx) => {
+				const input = exactObject(routeCtx.input, ["receiptId", "reviewedBy", "rationale"]);
+				const user = (routeCtx as unknown as { user?: { id?: unknown } }).user;
+				if (typeof user?.id !== "string") throw new Error("GITHUB_SYNC_RECEIPT_ACTOR_REQUIRED");
+				if (
+					typeof input.receiptId !== "string" ||
+					(input.reviewedBy !== undefined && typeof input.reviewedBy !== "string") ||
+					typeof input.rationale !== "string"
+				)
+					throw new Error("GITHUB_SYNC_RECEIPT_INPUT");
+				if (input.reviewedBy !== undefined && input.reviewedBy !== user.id)
+					throw new Error("GITHUB_SYNC_RECEIPT_ACTOR_MISMATCH");
+				const receipt = await readSyncReceipt(
+					(ctx.storage as unknown as { sync_receipts: ReceiptCollection }).sync_receipts,
+					input.receiptId,
+				);
+				if (!receipt) throw new Error("GITHUB_SYNC_RECEIPT_NOT_FOUND");
+				if (!ctx.content) throw new Error("GITHUB_SYNC_RECEIPT_CONTENT_CAPABILITY");
+				return toReceiptView(
+					await rollbackSyncReceipt(
+						(ctx.storage as unknown as { sync_receipts: ReceiptCollection }).sync_receipts,
+						receipt,
+						ctx.content as unknown as ReceiptContent,
+						user.id,
+						input.rationale,
+					),
 				);
 			},
 		},

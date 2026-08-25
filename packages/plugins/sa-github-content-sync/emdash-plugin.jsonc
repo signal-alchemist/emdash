@@ -6,9 +6,12 @@
 	"author": { "name": "signal-alchemist" },
 	"security": { "url": "https://github.com/signal-alchemist/emdash/security/advisories/new" },
 	"description": "Revision-safe GitHub article and media synchronization for EmDash.",
-	"capabilities": ["content:write", "media:write", "network:request"],
+	"capabilities": ["content:write", "media:read", "media:write", "network:request"],
 	"allowedHosts": ["api.github.com", "raw.githubusercontent.com"],
 	"storage": {
+		"sync_receipts": {
+			"indexes": ["deliveryId", "commitSha", "planDigest", "state", "createdAt", "trustedActorId"]
+		},
 		"sync_runs": {
 			"indexes": ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"]
 		},

@@ -25,6 +25,8 @@ import {
 import type { Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
 import type { Kysely } from "kysely";
 
+import { mediaSha256 } from "./media-sha256.js";
+
 /**
  * Schema view of a content table (ec_${collection}) for kysely. The standard
  * system columns are typed; user-defined fields are addressed via the open
@@ -1082,6 +1084,7 @@ function rowToMediaItem(row: {
 	size: number | null;
 	storage_key: string;
 	created_at: string;
+	sha256: string | null;
 }) {
 	return {
 		id: row.id,
@@ -1090,6 +1093,7 @@ function rowToMediaItem(row: {
 		size: row.size,
 		url: `/_emdash/api/media/file/${row.storage_key}`,
 		createdAt: row.created_at,
+		sha256: row.sha256,
 	};
 }
 
@@ -1103,6 +1107,7 @@ async function mediaGet(
 	size: number | null;
 	url: string;
 	createdAt: string;
+	sha256: string | null;
 } | null> {
 	const row = await db.selectFrom("media").where("id", "=", id).selectAll().executeTakeFirst();
 	if (!row) return null;
@@ -1120,6 +1125,7 @@ async function mediaList(
 		size: number | null;
 		url: string;
 		createdAt: string;
+		sha256: string | null;
 	}>;
 	cursor?: string;
 	hasMore: boolean;
@@ -1195,6 +1201,7 @@ async function mediaUpload(
 	} else {
 		throw new Error("media/upload: bytes must be a base64-encoded string or an array of bytes");
 	}
+	const sha256 = await mediaSha256(byteArray.slice().buffer);
 
 	// Write bytes to storage first, then create DB record.
 	// If DB insert fails, delete the storage object so we don't leak files.
@@ -1213,6 +1220,7 @@ async function mediaUpload(
 				storage_key: storageKey,
 				status: "ready",
 				created_at: now,
+				sha256,
 			})
 			.execute();
 	} catch (error) {
