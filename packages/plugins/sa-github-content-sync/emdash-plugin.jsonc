@@ -22,6 +22,17 @@
 				"status",
 				"lastCommitSha"
 			]
+		},
+		"sync_attempts": {
+			"indexes": [
+				"deliveryId",
+				"repository",
+				"commitSha",
+				"planDigest",
+				"state",
+				"createdAt",
+				"predecessorAttempt"
+			]
 		}
 	},
 	"admin": {

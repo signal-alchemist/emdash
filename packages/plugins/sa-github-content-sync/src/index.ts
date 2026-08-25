@@ -23,6 +23,17 @@ export function githubContentSyncPlugin(): PluginDescriptor {
 					"lastCommitSha",
 				],
 			},
+			sync_attempts: {
+				indexes: [
+					"deliveryId",
+					"repository",
+					"commitSha",
+					"planDigest",
+					"state",
+					"createdAt",
+					"predecessorAttempt",
+				],
+			},
 		},
 		adminPages: [{ path: "/deliveries", label: "Content Sync", icon: "arrows-clockwise" }],
 		adminWidgets: [{ id: "sync-status", title: "Content Sync", size: "third" }],

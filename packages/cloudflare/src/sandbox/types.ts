@@ -163,6 +163,7 @@ export interface PluginBridgeBinding {
 	kvList(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 	// Storage
 	storageGet(collection: string, id: string): Promise<unknown>;
+	storageCreate(collection: string, id: string, data: unknown): Promise<boolean>;
 	storagePut(collection: string, id: string, data: unknown): Promise<void>;
 	storageDelete(collection: string, id: string): Promise<boolean>;
 	storageQuery(

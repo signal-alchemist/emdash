@@ -142,6 +142,8 @@ export interface PaginatedResult<T> {
 export interface StorageCollection<T = unknown> {
 	// Basic CRUD
 	get(id: string): Promise<T | null>;
+	/** Insert only when absent; returns false when another writer owns the ID. */
+	create(id: string, data: T): Promise<boolean>;
 	put(id: string, data: T): Promise<void>;
 	delete(id: string): Promise<boolean>;
 	exists(id: string): Promise<boolean>;

@@ -134,6 +134,7 @@ function createStorageCollection<T>(
 
 	return {
 		get: (id) => repo.get(id),
+		create: (id, data) => repo.create(id, data),
 		put: (id, data) => repo.put(id, data),
 		delete: (id) => repo.delete(id),
 		exists: (id) => repo.exists(id),

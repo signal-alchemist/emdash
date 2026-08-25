@@ -101,6 +101,7 @@ function createContext(env) {
 	function createStorageCollection(collectionName) {
 		return {
 			get: (id) => bridge.storageGet(collectionName, id),
+			create: (id, data) => bridge.storageCreate(collectionName, id, data),
 			put: (id, data) => bridge.storagePut(collectionName, id, data),
 			delete: (id) => bridge.storageDelete(collectionName, id),
 			exists: async (id) => (await bridge.storageGet(collectionName, id)) !== null,

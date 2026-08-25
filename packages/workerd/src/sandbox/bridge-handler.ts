@@ -309,6 +309,14 @@ async function dispatch(
 		case "storage/get":
 			validateStorageCollection(opts, requireString(body, "collection"));
 			return storageGet(opts, requireString(body, "collection"), requireString(body, "id"));
+		case "storage/create":
+			validateStorageCollection(opts, requireString(body, "collection"));
+			return storageCreate(
+				opts,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				body.data,
+			);
 		case "storage/put":
 			validateStorageCollection(opts, requireString(body, "collection"));
 			return storagePut(
@@ -1542,6 +1550,7 @@ async function userList(
  * in-process plugins.
  */
 function getStorageRepo(opts: BridgeHandlerOptions, collection: string): PluginStorageRepository {
+	validateStorageCollection(opts, collection);
 	const config = opts.storageConfig?.[collection];
 	// Merge unique indexes into the indexes list since both are queryable
 	const allIndexes: Array<string | string[]> = [
@@ -1557,6 +1566,15 @@ async function storageGet(
 	id: string,
 ): Promise<unknown> {
 	return getStorageRepo(opts, collection).get(id);
+}
+
+async function storageCreate(
+	opts: BridgeHandlerOptions,
+	collection: string,
+	id: string,
+	data: unknown,
+): Promise<boolean> {
+	return getStorageRepo(opts, collection).create(id, data);
 }
 
 async function storagePut(

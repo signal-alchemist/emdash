@@ -439,6 +439,28 @@ describe("Bridge Handler Conformance", () => {
 			expect(result.result).toEqual({ message: "hello", level: "info" });
 		});
 
+		it("atomically creates once and returns boolean ownership", async () => {
+			const handler = makeHandler({ storageCollections: ["logs"] });
+			expect(
+				(
+					await call(handler, "storage/create", {
+						collection: "logs",
+						id: "claim",
+						data: { ok: true },
+					})
+				).result,
+			).toBe(true);
+			expect(
+				(
+					await call(handler, "storage/create", {
+						collection: "logs",
+						id: "claim",
+						data: { ok: false },
+					})
+				).result,
+			).toBe(false);
+		});
+
 		it("storage is scoped per plugin", async () => {
 			const handlerA = createBridgeHandler({
 				pluginId: "plugin-a",

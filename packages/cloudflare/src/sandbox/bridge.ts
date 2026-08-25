@@ -22,6 +22,10 @@ import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 
 import { sandboxHttpFetch } from "./bridge-http.js";
+import {
+	assertStorageCollectionDeclared,
+	storageCreate as createStorageRow,
+} from "./storage-create.js";
 
 /** Regex to validate collection names (prevent SQL injection) */
 const COLLECTION_NAME_REGEX = /^[a-z][a-z0-9_]*$/;
@@ -325,9 +329,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 
 	async storageGet(collection: string, id: string): Promise<unknown> {
 		const { pluginId, storageCollections } = this.ctx.props;
-		if (!storageCollections.includes(collection)) {
-			throw new Error(`Storage collection not declared: ${collection}`);
-		}
+		assertStorageCollectionDeclared(collection, storageCollections);
 		const result = await this.env.DB.prepare(
 			"SELECT data FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND id = ?",
 		)
@@ -335,6 +337,12 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			.first<{ data: string }>();
 		if (!result) return null;
 		return JSON.parse(result.data);
+	}
+
+	async storageCreate(collection: string, id: string, data: unknown): Promise<boolean> {
+		const { pluginId, storageCollections } = this.ctx.props;
+		assertStorageCollectionDeclared(collection, storageCollections);
+		return createStorageRow(this.env.DB, pluginId, collection, id, data);
 	}
 
 	async storagePut(collection: string, id: string, data: unknown): Promise<void> {

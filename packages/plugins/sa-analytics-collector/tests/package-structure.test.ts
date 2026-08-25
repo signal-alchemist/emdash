@@ -67,7 +67,7 @@ describe("marketing automation plugin package contracts", () => {
 		[
 			"../../sa-github-content-sync/emdash-plugin.jsonc",
 			"sa-github-content-sync",
-			["sync_runs", "sync_mappings"],
+			["sync_runs", "sync_mappings", "sync_attempts"],
 		],
 	] as const)(
 		"validates the authoring manifest for %s",
@@ -77,6 +77,19 @@ describe("marketing automation plugin package contracts", () => {
 			expect(manifest.publisher).toBe("signal-alchemist.github.io");
 			expect(manifest.publisher).not.toBe("did:plc:xyraubanwc5fwemkduw3upi6");
 			expect(Object.keys(manifest.storage as Record<string, unknown>)).toEqual(collections);
+			if (slug === "sa-github-content-sync") {
+				expect(
+					(manifest.storage as Record<string, { indexes: string[] }>).sync_attempts.indexes,
+				).toEqual([
+					"deliveryId",
+					"repository",
+					"commitSha",
+					"planDigest",
+					"state",
+					"createdAt",
+					"predecessorAttempt",
+				]);
+			}
 		},
 	);
 
@@ -96,7 +109,7 @@ describe("marketing automation plugin package contracts", () => {
 				id: "sa-github-content-sync",
 				capabilities: ["content:write", "media:write", "network:request"],
 				allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
-				storage: ["sync_runs", "sync_mappings"],
+				storage: ["sync_runs", "sync_mappings", "sync_attempts"],
 			},
 		],
 	] as const)("exposes the standard descriptor trust contract", (factory, expected) => {
@@ -112,6 +125,19 @@ describe("marketing automation plugin package contracts", () => {
 			adminWidgets: expect.any(Array),
 		});
 		expect(Object.keys(descriptor.storage ?? {})).toEqual(expected.storage);
+		if (expected.id === "sa-github-content-sync") {
+			expect(descriptor.storage?.sync_attempts).toEqual({
+				indexes: [
+					"deliveryId",
+					"repository",
+					"commitSha",
+					"planDigest",
+					"state",
+					"createdAt",
+					"predecessorAttempt",
+				],
+			});
+		}
 	});
 
 	it.each([
