@@ -960,6 +960,18 @@ export class ContentRepository {
 			throw new ContentMutationConflictError();
 		}
 
+		// A newly-created draft has no revision to promote later. Persist an
+		// accepted plugin update on the content row so reads and a later publish
+		// observe the same data instead of a detached revision.
+		if (
+			existing &&
+			!existing.liveRevisionId &&
+			!existing.draftRevisionId &&
+			stagedSlug === undefined
+		) {
+			return this.update(type, id, { ...input, data });
+		}
+
 		for (let attempt = 0; existing && attempt < MAX_DRAFT_STAGE_ATTEMPTS; attempt++) {
 			let baseData = existing.data;
 			if (existing.draftRevisionId) {
@@ -2089,6 +2101,9 @@ export class ContentRepository {
 		) {
 			throw new ContentMutationConflictError();
 		}
+		// Unpublishing an already-draft item is idempotent. Do not advance its
+		// optimistic-concurrency version or create a phantom revision.
+		if (!existing.liveRevisionId) return existing;
 		const fence = expected ?? existing;
 		const revisionRepo = new RevisionRepository(this.db);
 		let provisionalRevisionId: string | undefined;
