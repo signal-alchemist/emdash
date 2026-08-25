@@ -12,6 +12,17 @@ export function githubContentSyncPlugin(): PluginDescriptor {
 			sync_runs: {
 				indexes: ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"],
 			},
+			sync_mappings: {
+				indexes: [
+					"repository",
+					"branch",
+					"sourcePath",
+					"locale",
+					"contentId",
+					"status",
+					"lastCommitSha",
+				],
+			},
 		},
 		adminPages: [{ path: "/deliveries", label: "Content Sync", icon: "arrows-clockwise" }],
 		adminWidgets: [{ id: "sync-status", title: "Content Sync", size: "third" }],

@@ -1,5 +1,6 @@
 import type { SandboxedPlugin } from "emdash/plugin";
 
+import { applySyncPlan, type ApplyContext } from "./applier.js";
 import { buildSyncPlan } from "./planner.js";
 
 type StagedSync = {
@@ -121,6 +122,10 @@ export default {
 				if (!ctx.http) throw new Error("GitHub plan requires network:request capability");
 				return buildSyncPlan(routeCtx.input, ctx.http.fetch.bind(ctx.http));
 			},
+		},
+		apply: {
+			handler: async (routeCtx, ctx) =>
+				applySyncPlan(routeCtx.input, ctx as unknown as ApplyContext),
 		},
 		webhook: {
 			public: true,
