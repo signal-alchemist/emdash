@@ -302,3 +302,10 @@ export {
 	validateMediaSourceRef,
 	type MediaManifest,
 } from "./media-manifest.js";
+export {
+	allocateExperimentVariant, canonicalizeAllocation, issueAllocationReceipt, verifyAllocationReceipt,
+	buildPromotionPlan, createAtomicProposalBackend, createAtomicProposalStore,
+	type AllocationContract, type AllocationResult, type AllocationReceipt, type AllocationSigner, type AllocationVerifier,
+	type PromotionEvidence, type HumanApproval, type PromotionInput, type PromotionPlan,
+	type ProposalClaim, type ProposalClaimResult, type AtomicProposalBackend, type AtomicProposalStore,
+} from "./lp-allocation.js";
