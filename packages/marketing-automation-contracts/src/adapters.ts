@@ -8,7 +8,7 @@ import { validateImprovementProposal, validateMetricSnapshot } from "./validator
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const unsafePathChars = (value: string): boolean =>
-	value.includes("?") || value.includes("#") || [...value].some((char) => char.charCodeAt(0) < 32);
+	value.includes("?") || value.includes("#") || Array.from(value, (char) => char.charCodeAt(0)).some((code) => code < 32);
 const integer = (v: number): boolean => Number.isInteger(v) && v >= 0;
 const date = (v: string): boolean => !Number.isNaN(Date.parse(v));
 const safePath = (v: string): boolean =>

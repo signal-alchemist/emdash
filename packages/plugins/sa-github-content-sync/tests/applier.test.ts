@@ -548,7 +548,7 @@ describe("applySyncPlan", () => {
 		await redigest(plan);
 		const store = storage();
 		const mappingKey = encodeURIComponent(`${repository}|refs/heads/main|content/post.md|en`);
-		store.sync_mappings.put(mappingKey, {
+		await store.sync_mappings.put(mappingKey, {
 			sourceKey: mappingKey,
 			repository,
 			branch: "refs/heads/main",

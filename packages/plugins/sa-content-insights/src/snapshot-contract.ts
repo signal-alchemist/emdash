@@ -129,11 +129,11 @@ function rowBase(row: SourceAggregateRow, keys: readonly string[]): MetricSnapsh
 }
 
 export function adaptGscRow(row: GscAggregateRow): MetricSnapshot {
-	const base = rowBase(row as GscAggregateRow, ["impressions", "clicks"]);
-	base.funnel.impressions = count((row as GscAggregateRow).impressions, "SOURCE_ROW_INVALID");
-	base.funnel.clicks = count((row as GscAggregateRow).clicks, "SOURCE_ROW_INVALID");
-	base.funnel.sessions = count((row as GscAggregateRow).clicks, "SOURCE_ROW_INVALID");
-	base.funnel.pageViews = count((row as GscAggregateRow).clicks, "SOURCE_ROW_INVALID");
+	const base = rowBase(row, ["impressions", "clicks"]);
+	base.funnel.impressions = count(row.impressions, "SOURCE_ROW_INVALID");
+	base.funnel.clicks = count(row.clicks, "SOURCE_ROW_INVALID");
+	base.funnel.sessions = count(row.clicks, "SOURCE_ROW_INVALID");
+	base.funnel.pageViews = count(row.clicks, "SOURCE_ROW_INVALID");
 	base.definitions = [
 		{ id: "impressions", label: "Impressions", unit: "count", source: sourceFormula("gsc") },
 		{ id: "clicks", label: "Clicks", unit: "count", source: sourceFormula("gsc") },
@@ -152,10 +152,10 @@ export function adaptGscRow(row: GscAggregateRow): MetricSnapshot {
 	return base;
 }
 export function adaptGa4Row(row: Ga4AggregateRow): MetricSnapshot {
-	const base = rowBase(row as Ga4AggregateRow, ["sessions", "pageViews", "conversions"]);
-	base.funnel.sessions = count((row as Ga4AggregateRow).sessions, "SOURCE_ROW_INVALID");
-	base.funnel.pageViews = count((row as Ga4AggregateRow).pageViews, "SOURCE_ROW_INVALID");
-	base.funnel.conversions = count((row as Ga4AggregateRow).conversions, "SOURCE_ROW_INVALID");
+	const base = rowBase(row, ["sessions", "pageViews", "conversions"]);
+	base.funnel.sessions = count(row.sessions, "SOURCE_ROW_INVALID");
+	base.funnel.pageViews = count(row.pageViews, "SOURCE_ROW_INVALID");
+	base.funnel.conversions = count(row.conversions, "SOURCE_ROW_INVALID");
 	base.definitions = [
 		{ id: "sessions", label: "Sessions", unit: "count", source: sourceFormula("ga4") },
 		{ id: "conversions", label: "Conversions", unit: "count", source: sourceFormula("ga4") },
@@ -174,7 +174,7 @@ export function adaptGa4Row(row: Ga4AggregateRow): MetricSnapshot {
 	return base;
 }
 export function adaptFirstPartyFunnelRow(row: FirstPartyAggregateRow): MetricSnapshot {
-	const base = rowBase(row as FirstPartyAggregateRow, [
+	const base = rowBase(row, [
 		"sessions",
 		"pageViews",
 		"ctaExposures",
@@ -182,16 +182,16 @@ export function adaptFirstPartyFunnelRow(row: FirstPartyAggregateRow): MetricSna
 		"formStarts",
 		"conversions",
 	]);
-	base.funnel.sessions = count((row as FirstPartyAggregateRow).sessions, "SOURCE_ROW_INVALID");
-	base.funnel.pageViews = count((row as FirstPartyAggregateRow).pageViews, "SOURCE_ROW_INVALID");
+	base.funnel.sessions = count(row.sessions, "SOURCE_ROW_INVALID");
+	base.funnel.pageViews = count(row.pageViews, "SOURCE_ROW_INVALID");
 	base.funnel.ctaExposures = count(
-		(row as FirstPartyAggregateRow).ctaExposures,
+		row.ctaExposures,
 		"SOURCE_ROW_INVALID",
 	);
-	base.funnel.ctaClicks = count((row as FirstPartyAggregateRow).ctaClicks, "SOURCE_ROW_INVALID");
-	base.funnel.formStarts = count((row as FirstPartyAggregateRow).formStarts, "SOURCE_ROW_INVALID");
+	base.funnel.ctaClicks = count(row.ctaClicks, "SOURCE_ROW_INVALID");
+	base.funnel.formStarts = count(row.formStarts, "SOURCE_ROW_INVALID");
 	base.funnel.conversions = count(
-		(row as FirstPartyAggregateRow).conversions,
+		row.conversions,
 		"SOURCE_ROW_INVALID",
 	);
 	base.definitions = [
@@ -222,11 +222,11 @@ export function adaptFirstPartyFunnelRow(row: FirstPartyAggregateRow): MetricSna
 	return base;
 }
 export function adaptExperimentRow(row: ExperimentAggregateRow): MetricSnapshot {
-	const base = rowBase(row as ExperimentAggregateRow, ["exposures", "conversions"]);
-	base.funnel.sessions = count((row as ExperimentAggregateRow).exposures, "SOURCE_ROW_INVALID");
+	const base = rowBase(row, ["exposures", "conversions"]);
+	base.funnel.sessions = count(row.exposures, "SOURCE_ROW_INVALID");
 	base.funnel.pageViews = base.funnel.sessions;
 	base.funnel.conversions = count(
-		(row as ExperimentAggregateRow).conversions,
+		row.conversions,
 		"SOURCE_ROW_INVALID",
 	);
 	base.definitions = [
@@ -247,31 +247,31 @@ export function adaptExperimentRow(row: ExperimentAggregateRow): MetricSnapshot 
 	return base;
 }
 export function adaptCrmRevenueRow(row: CrmRevenueAggregateRow): MetricSnapshot {
-	const base = rowBase(row as CrmRevenueAggregateRow, [
+	const base = rowBase(row, [
 		"qualifiedSessions",
 		"conversions",
 		"revenueMinor",
 		"currency",
 	]);
 	base.funnel.sessions = count(
-		(row as CrmRevenueAggregateRow).qualifiedSessions,
+		row.qualifiedSessions,
 		"SOURCE_ROW_INVALID",
 	);
 	base.funnel.pageViews = base.funnel.sessions;
 	base.funnel.conversions = count(
-		(row as CrmRevenueAggregateRow).conversions,
+		row.conversions,
 		"SOURCE_ROW_INVALID",
 	);
 	base.funnel.revenueMinor = count(
-		(row as CrmRevenueAggregateRow).revenueMinor,
+		row.revenueMinor,
 		"SOURCE_ROW_INVALID",
 	);
 	if (
-		typeof (row as CrmRevenueAggregateRow).currency !== "string" ||
-		!CURRENCY.test((row as CrmRevenueAggregateRow).currency)
+		typeof row.currency !== "string" ||
+		!CURRENCY.test(row.currency)
 	)
 		fail("SOURCE_ROW_INVALID");
-	base.funnel.currency = (row as CrmRevenueAggregateRow).currency;
+	base.funnel.currency = row.currency;
 	base.definitions = [
 		{ id: "revenue", label: "Revenue", unit: "currency", source: sourceFormula("crm_revenue") },
 	];
@@ -336,8 +336,8 @@ function sortKeys(keys: string[]): string[] {
 	let i = 0;
 	let j = 0;
 	while (i < left.length || j < right.length) {
-		if (j >= right.length || (i < left.length && left[i]! <= right[j]!)) output.push(left[i++]!);
-		else output.push(right[j++]!);
+		if (j >= right.length || (i < left.length && left[i] <= right[j])) output.push(left[i++]);
+		else output.push(right[j++]);
 	}
 	return output;
 }

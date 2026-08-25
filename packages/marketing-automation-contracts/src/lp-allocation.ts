@@ -1,5 +1,4 @@
 /** Provider-neutral, bounded LP allocation and promotion contracts. */
-/* oxlint-disable unicorn/no-array-sort, e18e/prefer-array-to-sorted */
 export interface AllocationVariant { id: string; weight: number }
 export interface AllocationContract { experimentId: string; experimentRevision: number; variants: AllocationVariant[] }
 export interface AllocationResult { variantId: string; bucket: number; experimentRevision: number }
@@ -22,10 +21,11 @@ function exact(v: unknown, keys: string[]): v is Record<string, unknown> {
 	if (own.length !== keys.length || own.some((key) => !keys.includes(key))) return false;
 	return own.every((key) => Object.getOwnPropertyDescriptor(v, key)?.get === undefined && Object.getOwnPropertyDescriptor(v, key)?.set === undefined);
 }
-const safeRevision = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+const safeRevision = (v: unknown): v is number =>
+	typeof v === "number" && Number.isSafeInteger(v) && v >= 0;
 function sortedVariants(variants: AllocationVariant[]): AllocationVariant[] {
 	const copy = [...variants];
-	// oxlint-disable-next-line unicorn/no-array-sort
+	// oxlint-disable-next-line unicorn/no-array-sort -- ES2022 compatibility requires sorting a defensive copy for canonical allocation order.
 	copy.sort(compare);
 	return copy;
 }
@@ -42,10 +42,57 @@ function validatePromotionTime(i: PromotionInput): void {
 	const now = Date.parse(i.now);
 	if (![observed, approved, now].every(Number.isFinite) || observed > approved || approved > now || approved < now - 86_400_000) throw new Error("PROMOTION_APPROVAL_EXPIRED");
 }
+function compareText(left: string, right: string): number {
+	return left === right ? 0 : left < right ? -1 : 1;
+}
+function sortedCopy<T>(values: T[], compareValues: (left: T, right: T) => number): T[] {
+	const copy = [...values];
+	// oxlint-disable-next-line unicorn(no-array-sort), e18e(prefer-array-to-sorted) -- the package targets ES2022, so canonical sorting uses a defensive copy.
+	copy.sort(compareValues);
+	return copy;
+}
 function canonicalPromotionBinding(i: PromotionInput, changes: Array<{ repository: string; path: string; summary: string }>): string {
 	const evidence = i.evidence;
-	const approval = i.humanApproval!;
-	return JSON.stringify({ proposalId: i.proposalId, experimentId: i.experimentId, selectedVariantId: i.selectedVariantId, evidence: { evidenceId: evidence.evidenceId, evidenceHash: evidence.evidenceHash, sourceRevision: evidence.sourceRevision, evidenceRevision: evidence.evidenceRevision, expectedEvidenceRevision: evidence.expectedEvidenceRevision, observedAt: evidence.observedAt, samples: evidence.samples, guardrails: [...evidence.guardrails].sort((a, b) => a.metricId.localeCompare(b.metricId)).map((g) => ({ metricId: g.metricId, value: g.value, maxRegression: g.maxRegression })) }, approval: { approvalId: approval.approvalId, actorId: approval.actorId, proposalId: approval.proposalId, experimentId: approval.experimentId, evidenceId: approval.evidenceId, evidenceHash: approval.evidenceHash, selectedVariantId: approval.selectedVariantId, approvedAt: approval.approvedAt, proposalRevision: approval.proposalRevision, experimentRevision: approval.experimentRevision, sourceRevision: approval.sourceRevision, evidenceRevision: approval.evidenceRevision }, changes: [...changes].sort((a, b) => `${a.repository}:${a.path}`.localeCompare(`${b.repository}:${b.path}`)) });
+	const approval = i.humanApproval;
+	if (!approval) throw new Error("PROMOTION_APPROVAL_REQUIRED");
+	return JSON.stringify({
+		proposalId: i.proposalId,
+		experimentId: i.experimentId,
+		selectedVariantId: i.selectedVariantId,
+		evidence: {
+			evidenceId: evidence.evidenceId,
+			evidenceHash: evidence.evidenceHash,
+			sourceRevision: evidence.sourceRevision,
+			evidenceRevision: evidence.evidenceRevision,
+			expectedEvidenceRevision: evidence.expectedEvidenceRevision,
+			observedAt: evidence.observedAt,
+			samples: evidence.samples,
+			guardrails: sortedCopy(evidence.guardrails, (left, right) =>
+				compareText(left.metricId, right.metricId),
+			).map((guardrail) => ({
+				metricId: guardrail.metricId,
+				value: guardrail.value,
+				maxRegression: guardrail.maxRegression,
+			})),
+		},
+		approval: {
+			approvalId: approval.approvalId,
+			actorId: approval.actorId,
+			proposalId: approval.proposalId,
+			experimentId: approval.experimentId,
+			evidenceId: approval.evidenceId,
+			evidenceHash: approval.evidenceHash,
+			selectedVariantId: approval.selectedVariantId,
+			approvedAt: approval.approvedAt,
+			proposalRevision: approval.proposalRevision,
+			experimentRevision: approval.experimentRevision,
+			sourceRevision: approval.sourceRevision,
+			evidenceRevision: approval.evidenceRevision,
+		},
+		changes: sortedCopy(changes, (left, right) =>
+			compareText(`${left.repository}:${left.path}`, `${right.repository}:${right.path}`),
+		),
+	});
 }
 function validatePromotionChanges(changes: unknown): asserts changes is Array<{ repository: string; path: string; summary: string }> {
 	if (!Array.isArray(changes) || changes.some((change) => !exact(change, ["repository", "path", "summary"]))) throw new Error("PROMOTION_CHANGES_INVALID");
@@ -90,7 +137,16 @@ export async function verifyAllocationReceipt(c: AllocationContract, r: Allocati
 	try {
 		validateAllocation(c); const range = variantRange(c, r.variantId); if (!exact(r, ["version", "variantId", "bucket", "experimentRevision", "issuedAt", "expiresAt", "allocationDigest", "signature"]) || r.version !== 1 || !range || !Number.isSafeInteger(r.bucket) || r.bucket < range.start || r.bucket >= range.end || !safeRevision(r.experimentRevision) || r.experimentRevision !== c.experimentRevision || !HASH.test(r.allocationDigest) || typeof r.signature !== "string" || r.signature.length === 0 || r.signature.length > 512 || !Number.isSafeInteger(skew) || skew < 0 || skew > 86_400 || !verifier) return false;
 		const current = Date.parse(now), issued = Date.parse(r.issuedAt), expires = Date.parse(r.expiresAt); if (![current, issued, expires].every(Number.isFinite) || expires <= issued || issued > current + skew * 1000 || current >= expires || r.allocationDigest !== await sha256(canonicalizeAllocation(c))) return false;
-		return typeof verifier.verify === "function" && await verifier.verify(receiptPayload({ ...r, signature: undefined } as never).replace(',"signature":undefined', ""), r.signature);
+		const unsigned = {
+			version: r.version,
+			variantId: r.variantId,
+			bucket: r.bucket,
+			experimentRevision: r.experimentRevision,
+			issuedAt: r.issuedAt,
+			expiresAt: r.expiresAt,
+			allocationDigest: r.allocationDigest,
+		};
+		return typeof verifier.verify === "function" && await verifier.verify(receiptPayload(unsigned), r.signature);
 	} catch { return false; }
 }
 
@@ -101,7 +157,7 @@ export async function buildPromotionPlan(i: PromotionInput): Promise<PromotionPl
 	if (!ID.test(e.evidenceId) || !HASH.test(e.evidenceHash) || !Number.isFinite(Date.parse(e.observedAt)) || !Number.isSafeInteger(e.samples) || e.samples < 1 || e.samples > 1_000_000_000 || !Number.isSafeInteger(i.minSamples) || i.minSamples < 1 || i.minSamples > 1_000_000_000 || e.samples < i.minSamples || !Array.isArray(e.guardrails) || e.guardrails.length < 1 || e.guardrails.length > 32 || new Set(e.guardrails.map((g) => g.metricId)).size !== e.guardrails.length || e.guardrails.some((g) => !ID.test(g.metricId) || !Number.isFinite(g.value) || !Number.isFinite(g.maxRegression) || g.maxRegression < 0 || g.value > g.maxRegression)) throw new Error("PROMOTION_EVIDENCE_INVALID");
 	if (!a || !exact(a, ["actorType", "approvalId", "actorId", "approvedAt", "proposalId", "experimentId", "evidenceId", "evidenceHash", "selectedVariantId", "proposalRevision", "experimentRevision", "sourceRevision", "evidenceRevision"]) || a.actorType !== "human" || a.proposalId !== i.proposalId || a.experimentId !== i.experimentId || a.evidenceId !== e.evidenceId || a.evidenceHash !== e.evidenceHash || a.selectedVariantId !== i.selectedVariantId || a.proposalRevision !== i.proposalRevision || a.experimentRevision !== i.experimentRevision || a.sourceRevision !== i.sourceRevision || a.evidenceRevision !== e.expectedEvidenceRevision || !i.verifyHuman) throw new Error("PROMOTION_APPROVAL_INVALID");
 	if (!await i.verifyHuman(a)) throw new Error("PROMOTION_APPROVAL_INVALID"); const now = Date.parse(i.now), approved = Date.parse(a.approvedAt); if (!Number.isFinite(now) || !Number.isFinite(approved) || approved > now || approved < now - 86_400_000) throw new Error("PROMOTION_APPROVAL_EXPIRED");
-	if (!Array.isArray(i.changes) || i.changes.length < 1 || i.changes.length > 32 || i.changes.some((x) => !REPO.test(x.repository) || !x.path || x.path.includes("\\") || x.path.split("/").some((s) => !s || s === "." || s === ".." || [...s].some((c) => c.charCodeAt(0) <= 31 || c.charCodeAt(0) === 127)) || !x.summary.trim() || x.summary.length > 512) || new Set(i.changes.map((x) => `${x.repository}:${x.path}`)).size !== i.changes.length) throw new Error("PROMOTION_CHANGES_INVALID");
+	if (!Array.isArray(i.changes) || i.changes.length < 1 || i.changes.length > 32 || i.changes.some((x) => !REPO.test(x.repository) || !x.path || x.path.includes("\\") || x.path.split("/").some((s) => !s || s === "." || s === ".." || Array.from(s, (c) => c.charCodeAt(0)).some((code) => code <= 31 || code === 127)) || !x.summary.trim() || x.summary.length > 512) || new Set(i.changes.map((x) => `${x.repository}:${x.path}`)).size !== i.changes.length) throw new Error("PROMOTION_CHANGES_INVALID");
 	const changes = i.changes.map((x) => ({ ...x })); const planDigest = await sha256(canonicalPromotionBinding(i, changes)); return { kind: "git-change-plan", planId: `promotion-${i.proposalId}-${i.proposalRevision}-${planDigest.slice(0, 16)}`, proposalId: i.proposalId, experimentId: i.experimentId, changes, receipt: { planDigest, approvalId: a.approvalId, actorId: a.actorId, proposalId: i.proposalId, experimentId: i.experimentId, evidenceId: e.evidenceId, evidenceHash: e.evidenceHash, selectedVariantId: i.selectedVariantId, proposalRevision: i.proposalRevision, experimentRevision: i.experimentRevision, sourceRevision: i.sourceRevision, evidenceRevision: e.expectedEvidenceRevision } };
 }
 

@@ -155,8 +155,9 @@ function stableErrorCode(error: unknown): string {
 }
 
 function mappingKey(command: ContentSyncCommand): string {
+	const locale = typeof command.fields.locale === "string" ? command.fields.locale : "";
 	return encodeURIComponent(
-		`${command.source.repository}|${command.source.branch}|${command.source.path}|${String(command.fields.locale ?? "")}`,
+		`${command.source.repository}|${command.source.branch}|${command.source.path}|${locale}`,
 	);
 }
 
@@ -219,7 +220,7 @@ function mappingMatches(
 	return (
 		mapping.repository === command.source.repository &&
 		mapping.branch === command.source.branch &&
-		mapping.locale === String(command.fields.locale ?? "en") &&
+		mapping.locale === (typeof command.fields.locale === "string" ? command.fields.locale : "en") &&
 		mapping.contentId === (command.contentId ?? "") &&
 		mapping.collection === command.collection &&
 		mapping.status === "active" &&
@@ -524,7 +525,7 @@ async function applyValidatedPlan(
 		for (let index = 0; index < plan.commands.length; index += 1) {
 			if (record.completed.includes(index)) continue;
 			try {
-				const command = plan.commands[index]!;
+				const command = plan.commands[index];
 				const mapping = await findMapping(ctx, command);
 				if (receipt && ctx.storage.sync_receipts) {
 					const operation = receipt.operations[index];
@@ -598,7 +599,7 @@ async function applyValidatedPlan(
 								mediaIndex < result.uploadedMediaIds.length;
 								mediaIndex += 1
 							) {
-								const id = result.uploadedMediaIds[mediaIndex]!;
+								const id = result.uploadedMediaIds[mediaIndex];
 								const expected = command.media[mediaIndex]?.sha256;
 								const persisted = await ctx.media.get(id);
 								if (!persisted || persisted.id !== id || !expected || persisted.sha256 !== expected)
@@ -618,7 +619,7 @@ async function applyValidatedPlan(
 				await ctx.storage.sync_runs.put(key, record);
 			} catch (error) {
 				const status = isConflict(error) ? "conflict" : "failed";
-				const commandResult = resultFor(plan.commands[index]!, status, {
+				const commandResult = resultFor(plan.commands[index], status, {
 					errorCode: stableErrorCode(error),
 					errorMessage: "Synchronization was not applied",
 				});

@@ -99,8 +99,10 @@ function context(
 	} = {},
 ) {
 	const records = new Map<string, Record<string, unknown>>();
-	if (options.existing)
-		records.set(String(options.existing.snapshotId ?? "snapshot-001"), options.existing);
+	if (options.existing) {
+		const snapshotId = options.existing.snapshotId;
+		records.set(typeof snapshotId === "string" ? snapshotId : "snapshot-001", options.existing);
+	}
 	const put = vi.fn(async (id: string, value: Record<string, unknown>) => {
 		if (options.putError) throw new Error("write");
 		records.set(id, value);

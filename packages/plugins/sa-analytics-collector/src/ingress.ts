@@ -92,7 +92,7 @@ async function hmac(secret: string, message: string): Promise<string> {
 }
 
 export async function ingestAnalytics(
-	ctx: RouteContext<unknown>,
+	ctx: RouteContext,
 	options: AnalyticsIngressOptions | undefined,
 ) {
 	if (!options) reject("ANALYTICS_NOT_CONFIGURED", 503);
@@ -114,31 +114,31 @@ export async function ingestAnalytics(
 	} catch {
 		reject("ANALYTICS_BATCH_INVALID", 400);
 	}
-	const body = serializeAnalyticsEventBatch(batch!, { now });
+	const body = serializeAnalyticsEventBatch(batch, { now });
 	const window = Math.floor(now / WINDOW_MS);
 	// The rate key is a rotating HMAC pseudonym. Raw IP, secret, and event body
 	// never leave this function and are never handed to the limiter.
 	const key = await hmac(
-		options.secret!,
-		`${options.keyId!}:rate:${window}:${ctx.requestMeta.ip!}`,
+		options.secret,
+		`${options.keyId}:rate:${window}:${ctx.requestMeta.ip}`,
 	);
 	let reservation: DurableReservation | null;
 	try {
-		reservation = await options.limiter!.reserve(key, window, 60);
+		reservation = await options.limiter.reserve(key, window, 60);
 	} catch {
 		reject("ANALYTICS_RATE_LIMIT_UNAVAILABLE", 503);
 	}
 	if (!reservation) reject("ANALYTICS_RATE_LIMITED", 429);
 	// Idempotency is intentionally independent of IP and rate window: retries
 	// from another network or after rotation still identify the same batch.
-	const idempotency = await hmac(options.secret!, `${options.keyId!}:batch:${body}`);
+	const idempotency = await hmac(options.secret, `${options.keyId}:batch:${body}`);
 	let settled: "commit" | "rollback" | null = null;
 	let rollbackFailed = false;
 	const rollback = async () => {
 		if (settled) return;
 		settled = "rollback";
 		try {
-			await reservation!.rollback();
+			await reservation.rollback();
 		} catch {
 			rollbackFailed = true;
 		}
@@ -147,7 +147,7 @@ export async function ingestAnalytics(
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 5_000);
 		try {
-			const result = await options.forwarder!.forward(body, idempotency, controller.signal);
+			const result = await options.forwarder.forward(body, idempotency, controller.signal);
 			if (result !== "accepted") {
 				await rollback();
 				if (rollbackFailed) reject("ANALYTICS_RATE_ROLLBACK_FAILED", 503);
@@ -158,7 +158,7 @@ export async function ingestAnalytics(
 		}
 		if (!settled) {
 			try {
-				await reservation!.commit();
+				await reservation.commit();
 				settled = "commit";
 			} catch {
 				settled = null;

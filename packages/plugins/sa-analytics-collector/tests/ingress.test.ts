@@ -188,7 +188,7 @@ describe("analytics ingress", () => {
 		expect(reserve).toHaveBeenCalledTimes(1);
 	});
 	it("creates only the fixed HTTPS forwarder and never reflects upstream bodies", async () => {
-		await expect(() => createAnalyticsForwarder("https://evil.test/events")).toThrow();
+		expect(() => createAnalyticsForwarder("https://evil.test/events")).toThrow();
 		const fetchMock = vi.fn(async () => new Response("secret upstream body", { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
 		const result = await createAnalyticsForwarder(ANALYTICS_UPSTREAM).forward(

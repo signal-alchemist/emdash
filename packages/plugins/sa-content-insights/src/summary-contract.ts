@@ -114,8 +114,8 @@ export function readStoredSnapshot(value: unknown): StoredSnapshot {
 		value.formulaVersion !== SOURCES[value.source as string] ||
 		!COLLECTION.test(value.collection as string) ||
 		!LOCALE.test(value.locale as string) ||
-		!TARGET_PATH.test(value.target.path as string) ||
-		!CONTENT_ID.test(value.target.contentId as string)
+		!TARGET_PATH.test(value.target.path) ||
+		!CONTENT_ID.test(value.target.contentId)
 	)
 		throw new Error("SUMMARY_STORAGE_CORRUPT");
 	if (!DIGEST.test(String(value.digest)) || !time(value.importedAt) || !time(value.generatedAt))
@@ -127,7 +127,7 @@ export function readStoredSnapshot(value: unknown): StoredSnapshot {
 			control(value.sourceCommit))
 	)
 		throw new Error("SUMMARY_STORAGE_CORRUPT");
-	if (value.previousDigest !== undefined && !DIGEST.test(String(value.previousDigest)))
+	if (value.previousDigest !== undefined && (typeof value.previousDigest !== "string" || !DIGEST.test(value.previousDigest)))
 		throw new Error("SUMMARY_STORAGE_CORRUPT");
 	if (
 		!plain(value.window) ||
@@ -223,8 +223,8 @@ export function readStoredSnapshot(value: unknown): StoredSnapshot {
 		collection: value.collection as string,
 		locale: value.locale as string,
 		source: value.source as string,
-		formulaVersion: value.formulaVersion as string,
-		targetKey: value.targetKey as string,
+		formulaVersion: value.formulaVersion,
+		targetKey: value.targetKey,
 		target: { kind: "content", contentId: value.target.contentId, path: value.target.path },
 		window: { from: value.window.from, to: value.window.to },
 		importedAt: value.importedAt,
@@ -238,9 +238,9 @@ export function readStoredSnapshot(value: unknown): StoredSnapshot {
 		sampleWarnings: [...value.sampleWarnings],
 		digest: value.digest as string,
 		...(value.generatedAt === undefined ? {} : { generatedAt: value.generatedAt }),
-		...(value.sourceCommit === undefined ? {} : { sourceCommit: value.sourceCommit as string }),
+		...(value.sourceCommit === undefined ? {} : { sourceCommit: value.sourceCommit }),
 		...(value.previousDigest === undefined
 			? {}
-			: { previousDigest: value.previousDigest as string }),
+			: { previousDigest: value.previousDigest }),
 	};
 }

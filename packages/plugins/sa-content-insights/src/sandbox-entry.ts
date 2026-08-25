@@ -250,9 +250,9 @@ function summarizeRecords(
 			if (
 				plain(definition) &&
 				definition.unit === "ratio" &&
-				definition.denominator &&
-				typeof funnel[String(definition.denominator)] === "number" &&
-				funnel[String(definition.denominator)] === 0
+				typeof definition.denominator === "string" &&
+				typeof funnel[definition.denominator] === "number" &&
+				funnel[definition.denominator] === 0
 			) {
 				metrics[key] = null;
 				uncertainty.push("zero_denominator");
@@ -277,9 +277,9 @@ function summarizeRecords(
 		] as const;
 		const diagnosis = stepPairs.map(([denominatorKey, numeratorKey]) => {
 			const denominator =
-				typeof funnel[denominatorKey] === "number" ? (funnel[denominatorKey] as number) : null;
+				typeof funnel[denominatorKey] === "number" ? funnel[denominatorKey] : null;
 			const numerator =
-				typeof funnel[numeratorKey] === "number" ? (funnel[numeratorKey] as number) : null;
+				typeof funnel[numeratorKey] === "number" ? funnel[numeratorKey] : null;
 			const rate =
 				record.sampleWarnings.includes("LOW_SAMPLE") ||
 				denominator === null ||
@@ -677,18 +677,16 @@ function exactRecord(input: unknown, kind: "proposal" | "experiment"): StoredRec
 		!boundedText(input.evidence.snapshotId, 128) ||
 		typeof input.evidence.digest !== "string" ||
 		!SHA.test(input.evidence.digest) ||
-		(input.evidence as Record<string, unknown>).contentId !==
-			(input.content as Record<string, unknown>)?.id ||
-		(input.evidence as Record<string, unknown>).path !==
-			(input.content as Record<string, unknown>)?.path ||
-		(input.evidence as Record<string, unknown>).locale !== input.locale
+		input.evidence.contentId !== input.content?.id ||
+		input.evidence.path !== input.content?.path ||
+		input.evidence.locale !== input.locale
 	)
 		throw new Error("RECORD_EVIDENCE_INVALID");
 	if (
 		!plain(input.content) ||
-		!boundedText((input.content as Record<string, unknown>).id, 128) ||
-		!boundedText((input.content as Record<string, unknown>).path, 256) ||
-		!SAFE_CONTENT_PATH.test((input.content as Record<string, unknown>).path as string) ||
+		!boundedText(input.content.id, 128) ||
+		!boundedText(input.content.path, 256) ||
+		!SAFE_CONTENT_PATH.test(input.content.path) ||
 		!boundedText(input.locale, 16)
 	)
 		throw new Error("RECORD_CONTENT_INVALID");
@@ -773,7 +771,7 @@ function exactRecord(input: unknown, kind: "proposal" | "experiment"): StoredRec
 					!boundedText(metric.id, 64) ||
 					!TEXT_ID.test(metric.id) ||
 					!boundedText(metric.unit, 32) ||
-					!METRIC_UNITS.has(metric.unit as string) ||
+					!METRIC_UNITS.has(metric.unit) ||
 					!boundedText(metric.definitionId, 128),
 			) ||
 			new Set(metrics.map((metric) => metric.id)).size !== metrics.length
@@ -822,10 +820,9 @@ function exactRecord(input: unknown, kind: "proposal" | "experiment"): StoredRec
 	if (
 		input.window !== undefined &&
 		(!strictRecord(input.window, ["from", "to"]) ||
-			!strictStoredTime((input.window as Record<string, unknown>).from) ||
-			!strictStoredTime((input.window as Record<string, unknown>).to) ||
-			String((input.window as Record<string, unknown>).from) >=
-				String((input.window as Record<string, unknown>).to))
+			!strictStoredTime(input.window.from) ||
+			!strictStoredTime(input.window.to) ||
+			String(input.window.from) >= String(input.window.to))
 	)
 		throw new Error("RECORD_WINDOW_INVALID");
 	if (
@@ -1003,7 +1000,15 @@ async function persistRecord(
 		createdAt: existing?.createdAt ?? now,
 		updatedAt: now,
 	};
-	const claimId = `${kind}:${record.id}:revision:${record.revision}`;
+	if (typeof record.id !== "string") throw new Error("RECORD_ID_INVALID");
+	const recordId = record.id;
+	const revision =
+		typeof record.revision === "number"
+			? record.revision
+			: (() => {
+					throw new Error("RECORD_REVISION_INVALID");
+				})();
+	const claimId = `${String(kind)}:${recordId}:revision:${revision}`;
 	const commandDigest = await digestText(commandJson(record));
 	let intended: Record<string, unknown> = writtenValue;
 	try {
@@ -1011,8 +1016,8 @@ async function persistRecord(
 			const claimValue: RecordClaim = {
 				version: 1,
 				kind,
-				recordId: record.id,
-				revision: record.revision as number,
+				recordId,
+				revision,
 				digest: commandDigest,
 				record: writtenValue,
 			};
@@ -1023,7 +1028,7 @@ async function persistRecord(
 				const rawClaim = await claims.get(claimId).catch(() => {
 					throw new Error("RECORD_CLAIM_READ_FAILED");
 				});
-				const prior = validateRecordClaim(rawClaim, kind, record.id, record.revision as number);
+				const prior = validateRecordClaim(rawClaim, kind, recordId, revision);
 				if (prior.digest !== commandDigest) throw new Error("RECORD_REVISION_CONFLICT");
 				if ((await digestText(commandJson(prior.record))) !== prior.digest)
 					throw new Error("RECORD_CLAIM_CORRUPT");
@@ -1353,7 +1358,7 @@ export default {
 				return ingestSnapshot(
 					routeCtx.input,
 					ctx.content.get.bind(ctx.content),
-					ctx.storage.snapshots as SnapshotStore,
+					ctx.storage.snapshots,
 				);
 			}) as never,
 		},
@@ -1376,7 +1381,7 @@ export default {
 			) => {
 				if (!ctx.content?.get) throw new Error("CONTENT_READ_REQUIRED");
 				return persistRecord(routeCtx.input, "proposal", routeCtx.user, ctx as never);
-			}) as never,
+			}),
 		},
 		ingestExperiment: {
 			permission: "content:read",
@@ -1389,7 +1394,7 @@ export default {
 			) => {
 				if (!ctx.content?.get) throw new Error("CONTENT_READ_REQUIRED");
 				return persistRecord(routeCtx.input, "experiment", routeCtx.user, ctx as never);
-			}) as never,
+			}),
 		},
 		recent: {
 			permission: "plugins:manage",

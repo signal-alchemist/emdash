@@ -60,18 +60,93 @@ const POLICY_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const POLICY_BRANCH = /^refs\/heads\/[A-Za-z0-9._/-]{1,120}$/;
 const ATTEMPT_ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
-function hasAttemptStorage(storage: unknown): boolean {
-	try {
-		return Boolean((storage as { sync_attempts?: unknown }).sync_attempts);
-	} catch {
-		return false;
-	}
+function isWritableContent(value: unknown): value is NonNullable<ApplyContext["content"]> {
+	if (!value || typeof value !== "object") return false;
+	return ["get", "list", "create", "update", "publish", "unpublish"].every(
+		(method) => typeof Reflect.get(value, method) === "function",
+	);
 }
 
-function requireAttemptStorage(ctx: { storage: unknown }): AttemptContext {
-	if (!hasAttemptStorage(ctx.storage)) throw new Error("ATTEMPT_STORAGE_REQUIRED");
-	return ctx as unknown as AttemptContext;
+function isWritableMedia(value: unknown): value is NonNullable<ApplyContext["media"]> {
+	if (!value || typeof value !== "object") return false;
+	return ["get", "upload"].every(
+		(method) => typeof Reflect.get(value, method) === "function",
+	);
 }
+
+function hasMethods(value: unknown, methods: readonly string[]): value is object {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		methods.every((method) => typeof Reflect.get(value, method) === "function")
+	);
+}
+
+function isApplyStorage(value: unknown): value is ApplyContext["storage"] {
+	if (!value || typeof value !== "object") return false;
+	const syncRuns = Reflect.get(value, "sync_runs");
+	const syncMappings = Reflect.get(value, "sync_mappings");
+	const syncReceipts = Reflect.get(value, "sync_receipts");
+	return (
+		hasMethods(syncRuns, ["get", "put"]) &&
+		hasMethods(syncMappings, ["get", "put", "delete", "query"]) &&
+		(syncReceipts === undefined ||
+			hasMethods(syncReceipts, ["get", "create", "put", "delete", "query"]))
+	);
+}
+
+function isAttemptStorage(value: unknown): value is AttemptContext["storage"] {
+	if (!value || typeof value !== "object") return false;
+	const attempts = Reflect.get(value, "sync_attempts");
+	return attempts !== null && typeof attempts === "object";
+}
+
+type PluginRouteContext = {
+	content?: unknown;
+	media?: unknown;
+	http?: ApplyContext["http"];
+	storage: unknown;
+};
+
+function asApplyContext(ctx: PluginRouteContext): ApplyContext {
+	if (!isApplyStorage(ctx.storage)) throw new Error("GITHUB_SYNC_STORAGE_REQUIRED");
+	return {
+		content: isWritableContent(ctx.content) ? ctx.content : undefined,
+		media: isWritableMedia(ctx.media) ? ctx.media : undefined,
+		http: ctx.http,
+		storage: ctx.storage,
+	};
+}
+
+function asAttemptContext(ctx: PluginRouteContext): AttemptContext {
+	if (!isAttemptStorage(ctx.storage)) throw new Error("ATTEMPT_STORAGE_REQUIRED");
+	return {
+		content: undefined,
+		media: undefined,
+		http: ctx.http,
+		storage: ctx.storage,
+	};
+}
+
+function asRetryContext(ctx: PluginRouteContext): AttemptContext {
+	const attemptContext = asAttemptContext(ctx);
+	return {
+		...attemptContext,
+		content: isWritableContent(ctx.content) ? ctx.content : undefined,
+		media: isWritableMedia(ctx.media) ? ctx.media : undefined,
+	};
+}
+
+function isReceiptContent(value: unknown): value is ReceiptContent {
+	return (
+		value !== null &&
+		typeof value === "object" &&
+		typeof Reflect.get(value, "get") === "function" &&
+		typeof Reflect.get(value, "update") === "function"
+	);
+}
+
+const requireAttemptStorage = asAttemptContext;
 
 function exactObject(input: unknown, keys: readonly string[]): Record<string, unknown> {
 	if (
@@ -103,7 +178,7 @@ function readAttemptListInput(input: unknown): { limit?: number; cursor?: string
 		throw new Error("ATTEMPT_INPUT_INVALID");
 	if (value.cursor !== undefined && (typeof value.cursor !== "string" || value.cursor.length > 512))
 		throw new Error("ATTEMPT_INPUT_INVALID");
-	return value as { limit?: number; cursor?: string };
+	return value;
 }
 
 function readRetryInput(input: unknown): {
@@ -211,13 +286,13 @@ export function readVerifiedWebhook(input: unknown): VerifiedWebhook {
 		!COMMIT_SHA.test(value.commitSha) ||
 		typeof value.actorId !== "string" ||
 		!ACTOR_ID.test(value.actorId) ||
+		typeof value.pullRequestNumber !== "number" ||
+		!Number.isSafeInteger(value.pullRequestNumber) ||
+		value.pullRequestNumber < 1 ||
 		typeof value.filesUrl !== "string" ||
 		value.filesUrl !==
 			`https://api.github.com/repos/${value.repository}/pulls/${value.pullRequestNumber}/files` ||
-		value.event !== "pull_request" ||
-		typeof value.pullRequestNumber !== "number" ||
-		!Number.isSafeInteger(value.pullRequestNumber) ||
-		value.pullRequestNumber < 1
+		value.event !== "pull_request"
 	)
 		throw new Error("GITHUB_SYNC_PAYLOAD_INVALID");
 	return value as unknown as VerifiedWebhook;
@@ -272,7 +347,7 @@ export default {
 					throw new Error("ATTEMPT_PLAN_IDENTITY_CONFLICT");
 				if (current.state === "planned") await transitionAttempt(attempts, attemptId, "applying");
 				try {
-					const applied = await applySyncPlan(plan, ctx as unknown as ApplyContext);
+					const applied = await applySyncPlan(plan, asApplyContext(ctx));
 					if (attemptId) {
 						const next =
 							applied.status === "succeeded"
@@ -365,7 +440,7 @@ export default {
 			public: false,
 			permission: "plugins:manage",
 			handler: async (routeCtx, ctx) =>
-				listAttempts(ctx as unknown as AttemptContext, readAttemptListInput(routeCtx.input)),
+				listAttempts(asAttemptContext(ctx), readAttemptListInput(routeCtx.input)),
 		},
 		attempt: {
 			public: false,
@@ -373,7 +448,7 @@ export default {
 			handler: async (routeCtx, ctx) => {
 				const input = exactObject(routeCtx.input, ["attemptId"]);
 				if (typeof input.attemptId !== "string") throw new Error("ATTEMPT_ID_INVALID");
-				return detailAttempt(ctx as unknown as AttemptContext, input.attemptId);
+				return detailAttempt(asAttemptContext(ctx), input.attemptId);
 			},
 		},
 		retry: {
@@ -381,7 +456,6 @@ export default {
 			permission: "plugins:manage",
 			handler: async (routeCtx, ctx) => {
 				const input = readRetryInput(routeCtx.input);
-				const host = ctx as unknown as AttemptContext;
 				const user = (routeCtx as unknown as { user?: { id?: unknown } }).user;
 				if (typeof user?.id !== "string") throw new Error("ATTEMPT_ACTOR_REQUIRED");
 				const configured = await (
@@ -404,6 +478,7 @@ export default {
 					throw new Error("ATTEMPT_POLICY_INVALID");
 				if (input.resolution && input.resolution.reviewedBy !== user.id)
 					throw new Error("ATTEMPT_REVIEW_ACTOR_INVALID");
+				const host = asRetryContext(ctx);
 				return retryAttempt(
 					{
 						...host,
@@ -412,7 +487,7 @@ export default {
 							repository: (configured as { repository: string }).repository,
 							branch: (configured as { branch: string }).branch,
 						},
-					} as AttemptContext,
+					},
 					input,
 				);
 			},
@@ -460,12 +535,13 @@ export default {
 					input.receiptId,
 				);
 				if (!receipt) throw new Error("GITHUB_SYNC_RECEIPT_NOT_FOUND");
-				if (!ctx.content) throw new Error("GITHUB_SYNC_RECEIPT_CONTENT_CAPABILITY");
+				if (!isReceiptContent(ctx.content))
+					throw new Error("GITHUB_SYNC_RECEIPT_CONTENT_CAPABILITY");
 				return toReceiptView(
 					await rollbackSyncReceipt(
 						(ctx.storage as unknown as { sync_receipts: ReceiptCollection }).sync_receipts,
 						receipt,
-						ctx.content as unknown as ReceiptContent,
+						ctx.content,
 						user.id,
 						input.rationale,
 					),

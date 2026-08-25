@@ -550,7 +550,7 @@ export async function rollbackSyncReceipt(
 	let activeIndex = -1;
 	try {
 		for (let index = 0; index < working.operations.length; index += 1) {
-			const operation = working.operations[index]!;
+			const operation = working.operations[index];
 			if (!operation.post) continue;
 			if (operation.rollbackResult?.state === "completed") {
 				const completed = await content.get(operation.collection, operation.post.id);
@@ -669,7 +669,7 @@ export async function rollbackSyncReceipt(
 		}
 	} catch (error) {
 		if (uncheckpointedMutation && activeIndex >= 0) {
-			const operation = working.operations[activeIndex]!;
+			const operation = working.operations[activeIndex];
 			try {
 				const observed = operation.post
 					? await content.get(operation.collection, operation.post.id)

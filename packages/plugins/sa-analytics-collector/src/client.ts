@@ -69,13 +69,13 @@ function browserAnalyticsRuntime(config: Record<string, unknown>): void {
 		copy.sort(compare);
 		return copy;
 	};
-	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping)
+	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping) -- this runtime is stringified for browser injection and must remain self-contained.
 	// eslint-disable-next-line e18e/prefer-static-regex
 	const ID = new RegExp("^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$");
-	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping)
+	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping) -- this runtime is stringified for browser injection and must remain self-contained.
 	// eslint-disable-next-line e18e/prefer-static-regex
 	const SHA = new RegExp("^[a-f0-9]{40}$");
-	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping)
+	// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping) -- this runtime is stringified for browser injection and must remain self-contained.
 	// eslint-disable-next-line e18e/prefer-static-regex
 	const ISO = new RegExp("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z$");
 	const names = new Set([
@@ -119,7 +119,7 @@ function browserAnalyticsRuntime(config: Record<string, unknown>): void {
 		typeof v === "string" &&
 		v.length > 0 &&
 		v.length <= max &&
-		![...v].some((c) => c.charCodeAt(0) < 32);
+		!Array.from(v, (c) => c.charCodeAt(0)).some((code) => code < 32);
 	// eslint-disable-next-line unicorn/consistent-function-scoping
 	const isObjectPrototype = (p: any) => {
 		if (!p || Object.getPrototypeOf(p) !== null || p.constructor?.prototype !== p) return false;
@@ -273,7 +273,7 @@ function browserAnalyticsRuntime(config: Record<string, unknown>): void {
 		!value.includes("?") &&
 		!value.includes("#") &&
 		!value.includes("@") &&
-		![...value].some((c) => c.charCodeAt(0) < 32) &&
+		!Array.from(value, (c) => c.charCodeAt(0)).some((code) => code < 32) &&
 		!value
 			.split("/")
 			.slice(1)
@@ -346,7 +346,7 @@ function browserAnalyticsRuntime(config: Record<string, unknown>): void {
 				(Number.isSafeInteger(payload[k]) && payload[k] >= 0 && payload[k] <= 1000000000),
 		) &&
 		(payload.currency === undefined ||
-			// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping)
+			// oxlint-disable-next-line e18e(prefer-static-regex), unicorn(consistent-function-scoping) -- this runtime is stringified for browser injection and must remain self-contained.
 			new RegExp("^[A-Z]{3}$").test(payload.currency)) && // eslint-disable-line e18e/prefer-static-regex
 		(name !== "conversion" || (payload.value === undefined) === (payload.currency === undefined)) &&
 		(name !== "experiment_exposure" || !!context.experiment);
@@ -391,7 +391,7 @@ function browserAnalyticsRuntime(config: Record<string, unknown>): void {
 			!referrer.includes("?") &&
 			!referrer.includes("#") &&
 			!referrer.includes("@") &&
-			![...referrer].some((c) => c.charCodeAt(0) < 32)
+			!Array.from(referrer, (c) => c.charCodeAt(0)).some((code) => code < 32)
 		) {
 			try {
 				const u = new URL(referrer, location?.href || "https://invalid.local/");
@@ -606,10 +606,9 @@ function browserWindow(): Window | undefined {
 }
 function safeEndpoint(endpoint: string): boolean {
 	if (endpoint.startsWith("/")) {
-		const unsafe = [...endpoint].some((character) => {
-			const code = character.charCodeAt(0);
-			return code < 32 || character === "<" || character === ">";
-		});
+		const unsafe = Array.from(endpoint, (character) => ({ character, code: character.charCodeAt(0) })).some(
+			({ character, code }) => code < 32 || character === "<" || character === ">",
+		);
 		return !endpoint.startsWith("//") && !unsafe;
 	}
 	return false;
@@ -702,7 +701,7 @@ export function createAnalyticsClient(options: AnalyticsClientOptions): Analytic
 		try {
 			return options.consent();
 		} catch {
-			return { state: "unknown", policyVersion: 1 } as ClientConsent;
+			return { state: "unknown", policyVersion: 1 };
 		}
 	};
 	const revoke = () => {

@@ -102,6 +102,7 @@ export class MemoryAnalyticsBackend implements AnalyticsBackend {
 			ownerToken,
 			leaseUntil: now + leaseMs,
 			status: "in_progress",
+			// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- null-prototype dictionary is intentionally narrowed to its only permitted receipt states.
 			processed: Object.create(null) as Record<string, "deleted" | "not_found">,
 			cursor: null,
 			receipt: null,
@@ -319,7 +320,7 @@ export function validateRetention(policy: RetentionPolicy): RetentionPolicy {
 	return { ...policy };
 }
 const policyHash = (policy: RetentionPolicy) =>
-	hash(JSON.stringify(Object.entries(validateRetention(policy)).toSorted()));
+	hash(JSON.stringify(Object.entries(validateRetention(policy)).toSorted(([left], [right]) => left.localeCompare(right))));
 export async function cleanupAnalytics(
 	backend: AnalyticsBackend,
 	policy: RetentionPolicy,

@@ -38,9 +38,9 @@ const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 const CURRENCY = /^[A-Z]{3}$/;
 const RFC3339_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 const ZERO_MILLIS = /\.000Z$/;
-const fail = (code: string): never => {
+function fail(code: string): never {
 	throw new AnalyticsBatchValidationError(code);
-};
+}
 
 export class AnalyticsBatchValidationError extends Error {
 	readonly code: string;
@@ -52,13 +52,13 @@ export class AnalyticsBatchValidationError extends Error {
 }
 function text(value: unknown, code: string): string {
 	if (typeof value !== "string" || !value || value.length > MAX_STRING) fail(code);
-	return value as string;
+	return value;
 }
 function exact(value: unknown, keys: readonly string[], code: string): Record<string, unknown> {
 	if (!value || typeof value !== "object" || Array.isArray(value)) fail(code);
 	const prototype = Object.getPrototypeOf(value);
 	if (prototype !== Object.prototype) fail(`${code}_PROTOTYPE`);
-	const input = value as Record<string, unknown>;
+	const input = Object.fromEntries(Object.entries(value));
 	const allowed = new Set(keys);
 	for (const key of Object.keys(input)) if (!allowed.has(key)) fail(`${code}_EXCESS_FIELD`);
 	return input;
@@ -124,7 +124,7 @@ function eventPayload(eventName: AnalyticsEventName, value: unknown): Record<str
 		if (payload[key] !== undefined)
 			id(payload[key], `ANALYTICS_${eventName.toUpperCase()}_${key.toUpperCase()}_INVALID`);
 	if (eventName === "scroll_depth") {
-		if (![25, 50, 75, 90, 100].includes(payload.percent as number))
+		if (typeof payload.percent !== "number" || ![25, 50, 75, 90, 100].includes(payload.percent))
 			fail("ANALYTICS_SCROLL_DEPTH_INVALID");
 	}
 	for (const key of ["value", "amount"])
@@ -132,9 +132,9 @@ function eventPayload(eventName: AnalyticsEventName, value: unknown): Record<str
 			payload[key] !== undefined &&
 			(typeof payload[key] !== "number" ||
 				!Number.isFinite(payload[key]) ||
-				(payload[key] as number) < 0 ||
+				payload[key] < 0 ||
 				!Number.isSafeInteger(payload[key]) ||
-				(payload[key] as number) > MAX_MONEY_MINOR)
+				payload[key] > MAX_MONEY_MINOR)
 		)
 			fail("ANALYTICS_MONEY_INVALID");
 	if (
@@ -142,16 +142,21 @@ function eventPayload(eventName: AnalyticsEventName, value: unknown): Record<str
 		!CURRENCY.test(text(payload.currency, "ANALYTICS_CURRENCY_INVALID"))
 	)
 		fail("ANALYTICS_CURRENCY_INVALID");
-	if (payload.amount !== undefined && (payload.amount as number) > Number.MAX_SAFE_INTEGER)
+	if (
+		payload.amount !== undefined &&
+		(typeof payload.amount !== "number" || payload.amount > Number.MAX_SAFE_INTEGER)
+	)
 		fail("ANALYTICS_MONEY_INVALID");
 	return payload;
 }
 function stable(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-	if (value && typeof value === "object")
-		return `{${orderKeys(Object.keys(value as object))
-			.map((key) => `${JSON.stringify(key)}:${stable((value as Record<string, unknown>)[key])}`)
+	if (value && typeof value === "object") {
+		const entries = Object.fromEntries(Object.entries(value));
+		return `{${orderKeys(Object.keys(entries))
+			.map((key) => `${JSON.stringify(key)}:${stable(entries[key])}`)
 			.join(",")}}`;
+	}
 	return JSON.stringify(value);
 }
 function compareAscii(left: string, right: string): number {
@@ -202,8 +207,8 @@ export function validateAnalyticsEventBatch(
 	if (!Array.isArray(input.events) || input.events.length === 0 || input.events.length > MAX_EVENTS)
 		fail("ANALYTICS_BATCH_COUNT_INVALID");
 	const ids = new Set<string>();
-	const events = (input.events as unknown[]).map((raw: unknown) => {
-		exact(
+	const events = input.events.map((raw: unknown) => {
+		const rawObject = exact(
 			raw,
 			[
 				"version",
@@ -224,7 +229,7 @@ export function validateAnalyticsEventBatch(
 			],
 			"ANALYTICS_EVENT",
 		);
-		const payloadValue = (raw as Record<string, unknown>).payload;
+		const payloadValue = rawObject.payload;
 		if (!payloadValue || typeof payloadValue !== "object" || Array.isArray(payloadValue))
 			fail("ANALYTICS_EVENT_PAYLOAD_INVALID");
 		if (Object.getPrototypeOf(payloadValue) !== Object.prototype)
@@ -271,7 +276,7 @@ export function validateAnalyticsEventBatch(
 				event.referrer.includes("?") ||
 				event.referrer.includes("#") ||
 				event.referrer.includes("@") ||
-				[...event.referrer].some((char) => char.charCodeAt(0) < 32))
+				Array.from(event.referrer, (char) => char.charCodeAt(0)).some((code) => code < 32))
 		)
 			fail("ANALYTICS_REFERRER_INVALID");
 		if (
@@ -292,6 +297,7 @@ export function validateAnalyticsEventBatch(
 		if (event.eventName === "experiment_exposure" && !event.experiment)
 			fail("ANALYTICS_EXPERIMENT_REQUIRED");
 		const payload = eventPayload(event.eventName, event.payload);
+		// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the envelope and event-specific payload have both passed runtime validation above.
 		return { ...event, eventName: event.eventName, payload } as NormalizedAnalyticsEvent;
 	});
 	const normalized = {

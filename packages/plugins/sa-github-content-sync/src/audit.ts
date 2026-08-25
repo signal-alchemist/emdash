@@ -325,7 +325,7 @@ export function readAttempt(value: unknown): AttemptRecord | null {
 		) ||
 		item.history[0]?.state !== "accepted" ||
 		item.history.at(-1)?.state !== item.state ||
-		item.history.some((entry, index, history) => index > 0 && entry.at < history[index - 1]!.at) ||
+		item.history.some((entry, index, history) => index > 0 && entry.at < history[index - 1].at) ||
 		(item.state === "planned" && item.planDigest === undefined) ||
 		(item.state === "failed" && item.errorCode === undefined) ||
 		(item.state === "succeeded" && item.contentIds.length === 0 && item.mediaIds.length === 0)

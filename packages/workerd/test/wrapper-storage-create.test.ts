@@ -15,6 +15,7 @@ function extractContext(source: string, bridgeCall: (method: string, body: unkno
 		}
 	}
 	if (start < 0 || end < 0) throw new Error("createContext not found");
+	// oxlint-disable-next-line typescript/no-implied-eval -- this isolated test evaluates the generated wrapper source under test.
 	return new Function("bridgeCall", `${source.slice(start, end + 1)}; return createContext;`)(bridgeCall)();
 }
 

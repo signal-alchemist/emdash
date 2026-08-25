@@ -86,8 +86,8 @@ function parseContentDocument(
 	const body = text.slice(text.indexOf("\n---\n", 4) + "\n---\n".length);
 	const fields = new Map<string, string>();
 	for (const match of frontmatter.matchAll(FIELD)) {
-		if (fields.has(match[1]!)) invalid("frontmatter.duplicate_key");
-		fields.set(match[1]!, match[2]!);
+		if (fields.has(match[1])) invalid("frontmatter.duplicate_key");
+		fields.set(match[1], match[2]);
 	}
 	const contentId = fields.get("contentId");
 	const locale = fields.get("locale");
@@ -120,10 +120,10 @@ function parseContentDocument(
 		text.matchAll(
 			/(?:^|[\s("'])((?:assets)\/[A-Za-z0-9._/-]+\.(?:avif|gif|jpeg|jpg|png|webp))(?:$|[\s)"'])/gim,
 		),
-		(match) => match[1]!,
+		(match) => match[1],
 	);
 	for (const match of text.matchAll(LINK)) {
-		const href = match[1]!.trim().replace(/^<|>$/g, "");
+		const href = match[1].trim().replace(/^<|>$/g, "");
 		const lower = href.toLowerCase();
 		const scheme = SCHEME.test(href);
 		if (
@@ -393,7 +393,7 @@ export async function hexDigest(bytes: Uint8Array): Promise<string> {
 export function stableStringify(value: unknown): string {
 	if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
 	if (value && typeof value === "object") {
-		const keys = Object.keys(value as Record<string, unknown>);
+		const keys = Object.keys(value);
 		// oxlint-disable-next-line unicorn(no-array-sort) -- canonical ASCII key order is intentional.
 		keys.sort();
 		return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify((value as Record<string, unknown>)[key])}`).join(",")}}`;
@@ -515,12 +515,12 @@ export async function buildSyncPlan(input: unknown, fetcher: PlannerFetch): Prom
 		invalid("identity_manifest_invalid");
 	}
 	const identityErrors = validateContentIdentityManifest(
-		identityManifest!,
+		identityManifest,
 		documents!,
 		identityManifest!.siteId,
 		{ contentRoots: ["content/"] },
 	);
-	if (identityErrors.length > 0) invalid(identityErrors[0]!);
+	if (identityErrors.length > 0) invalid(identityErrors[0]);
 	for (const entry of identityManifest!.entries) {
 		if (
 			entry.source.repository !== identity.repository ||
@@ -555,7 +555,10 @@ export async function buildSyncPlan(input: unknown, fetcher: PlannerFetch): Prom
 			!Array.isArray(parsed.media)
 		)
 			invalid("media_manifest_invalid");
-		mediaManifest = parsed as unknown as MediaManifest;
+		mediaManifest = {
+			schemaVersion: 1,
+			media: parsed.media.map((entry) => validateMediaSourceRef(entry)),
+		};
 	}
 	// oxlint-disable-next-line unicorn(no-array-sort) -- ES2022 package target has no toSorted.
 	entries.sort((left, right) => (left.path < right.path ? -1 : left.path > right.path ? 1 : 0));
@@ -748,7 +751,7 @@ export async function validateSyncPlan(input: unknown): Promise<SyncPlan> {
 	)
 		invalid("apply_input");
 	const value = input as Record<string, unknown>;
-	// oxlint-disable-next-line unicorn/no-array-sort
+	// oxlint-disable-next-line unicorn/no-array-sort -- ES2022 compatibility requires in-place sorting of this newly created key array.
 	const keys = Object.keys(value).sort().join(",");
 	if (
 		keys !==
@@ -840,7 +843,7 @@ export async function validateSyncPlan(input: unknown): Promise<SyncPlan> {
 		totalPlanBytes: value.totalPlanBytes,
 		planDigest: value.planDigest,
 		planDigestScope: "core-plan-v1",
-	} as SyncPlan;
+	};
 }
 import {
 	buildMediaManifest,

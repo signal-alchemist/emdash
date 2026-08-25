@@ -27,18 +27,18 @@ const BRANCH = /^[A-Za-z0-9._/-]+$/;
 const MIME = /^[A-Za-z0-9.+-]+\/[A-Za-z0-9.+-]+$/;
 const SAFE_MAP_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 const unsafeChars = (value: string): boolean =>
-	value.includes("?") || value.includes("#") || [...value].some((char) => char.charCodeAt(0) < 32);
+	value.includes("?") || value.includes("#") || Array.from(value, (char) => char.charCodeAt(0)).some((code) => code < 32);
 const SECRET = /(secret|token|cookie|authorization|rawhtml|<script|javascript:|set-cookie)/i;
 const DIRECT_KEY = /directpublish|automerge|publishwithoutreview/i;
 const DIRECT_VALUE = /publish directly|direct publish|auto.?merge/i;
 const PRIVATE_KEY =
 	/^(email|name|phone|address|password|ip|userAgent|formValue|formValues|html|dom|replay|screenshot)$/i;
 const keyCode = (v: string) => v.replace(/[^a-zA-Z0-9_.-]/g, "?").slice(0, 64);
-const fail = (code: string): never => {
+function fail(code: string): never {
 	throw new ContractValidationError(code);
-};
+}
 function scan(value: unknown): void {
-	const seen = new WeakSet<object>();
+	const seen = new WeakSet();
 	let nodes = 0;
 	function visit(v: unknown, p: string, d: number): void {
 		if (++nodes > MAX_NODES || d > MAX_DEPTH) fail("SECURITY_INPUT_BOUNDS");
@@ -70,7 +70,7 @@ function obj(v: unknown, code: string): Record<string, unknown> {
 	if (!v || typeof v !== "object" || Array.isArray(v)) fail(code);
 	const p = Object.getPrototypeOf(v);
 	if (p !== Object.prototype && p !== null) fail(`${code}_PROTOTYPE`);
-	return v as Record<string, unknown>;
+	return Object.fromEntries(Object.entries(v));
 }
 function exact(v: unknown, keys: readonly string[], code: string): Record<string, unknown> {
 	const o = obj(v, code),
@@ -83,19 +83,19 @@ function exact(v: unknown, keys: readonly string[], code: string): Record<string
 }
 function text(v: unknown, code: string, max = MAX_STRING): string {
 	if (typeof v !== "string" || !v || v.length > max) fail(code);
-	return v as string;
+	return v;
 }
 function strings(v: unknown, code: string, required = false): string[] {
 	if (!Array.isArray(v) || (required && !v.length)) fail(code);
-	return (v as unknown[]).map((x: unknown) => text(x, `${code}_ITEM`));
+	return v.map((x: unknown) => text(x, `${code}_ITEM`));
 }
 function finite(v: unknown, code: string, min = 0, max = Infinity): number {
 	if (typeof v !== "number" || !Number.isFinite(v) || v < min || v > max) fail(code);
-	return v as number;
+	return v;
 }
 function count(v: unknown, code: string): number {
-	if (!Number.isInteger(v) || (v as number) < 0) fail(code);
-	return v as number;
+	if (typeof v !== "number" || !Number.isInteger(v) || v < 0) fail(code);
+	return v;
 }
 function iso(v: unknown, code: string): string {
 	const s = text(v, code);
@@ -160,7 +160,7 @@ function target(v: unknown, code: string): Record<string, unknown> {
 	}
 	if (kind === "metadata") {
 		const x = exact(i, ["kind", "path", "field"], code);
-		if (!["title", "description", "canonical", "schema"].includes(x.field as string))
+		if (typeof x.field !== "string" || !["title", "description", "canonical", "schema"].includes(x.field))
 			fail(`${code}_FIELD_INVALID`);
 		return { kind, path: safePath(x.path, `${code}_PATH_INVALID`), field: x.field };
 	}
@@ -195,13 +195,13 @@ function media(v: unknown): Record<string, unknown> {
 	const normalizedSourcePath = relativePath(sourcePath, "CONTENT_SYNC_MEDIA_PATH_INVALID");
 	if (!MIME.test(text(i.mimeType, "CONTENT_SYNC_MEDIA_MIME_INVALID")))
 		fail("CONTENT_SYNC_MEDIA_MIME_INVALID");
-	if (!Number.isInteger(i.bytes) || (i.bytes as number) <= 0)
+	if (typeof i.bytes !== "number" || !Number.isInteger(i.bytes) || i.bytes <= 0)
 		fail("CONTENT_SYNC_MEDIA_BYTES_INVALID");
 	const paired = (i.width === undefined) === (i.height === undefined);
 	if (
 		!paired ||
-		(i.width !== undefined && (!Number.isInteger(i.width) || (i.width as number) <= 0)) ||
-		(i.height !== undefined && (!Number.isInteger(i.height) || (i.height as number) <= 0))
+		(i.width !== undefined && (typeof i.width !== "number" || !Number.isInteger(i.width) || i.width <= 0)) ||
+		(i.height !== undefined && (typeof i.height !== "number" || !Number.isInteger(i.height) || i.height <= 0))
 	)
 		fail("CONTENT_SYNC_MEDIA_DIMENSIONS_INVALID");
 	const o: Record<string, unknown> = {
@@ -265,7 +265,7 @@ export function validateAnalyticsEventEnvelope(v: unknown): AnalyticsEventEnvelo
 			"conversion",
 			"revenue",
 			"experiment_exposure",
-		].includes(i.eventName as string)
+		].includes(typeof i.eventName === "string" ? i.eventName : "")
 	)
 		fail("ANALYTICS_EVENT_NAME_INVALID");
 	const o: Record<string, unknown> = {
@@ -303,6 +303,7 @@ export function validateAnalyticsEventEnvelope(v: unknown): AnalyticsEventEnvelo
 			assignedAt: iso(x.assignedAt, "ANALYTICS_ASSIGNED_AT_INVALID"),
 		};
 	}
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized envelope is constructed only from runtime-validated fields above.
 	return o as unknown as AnalyticsEventEnvelope;
 }
 
@@ -327,14 +328,14 @@ export function validateContentSyncCommand(v: unknown): ContentSyncCommand {
 		"CONTENT_SYNC",
 	);
 	ver(i, "CONTENT_SYNC");
-	if (!["upsert", "rename", "unpublish", "delete"].includes(i.operation as string))
+	if (typeof i.operation !== "string" || !["upsert", "rename", "unpublish", "delete"].includes(i.operation))
 		fail("CONTENT_SYNC_OPERATION_INVALID");
 	const fields = obj(i.fields, "CONTENT_SYNC_FIELDS_INVALID");
 	for (const k of Object.keys(fields))
 		if (DIRECT_KEY.test(k)) fail("CONTENT_SYNC_DIRECT_PUBLISH_FORBIDDEN");
 	if (!Array.isArray(i.media)) fail("CONTENT_SYNC_MEDIA_INVALID");
 	const state = i.publishState;
-	if (!["draft", "published", "scheduled", "unpublished"].includes(state as string))
+	if (typeof state !== "string" || !["draft", "published", "scheduled", "unpublished"].includes(state))
 		fail("CONTENT_SYNC_PUBLISH_STATE_INVALID");
 	const o: Record<string, unknown> = {
 		version: 1,
@@ -344,13 +345,14 @@ export function validateContentSyncCommand(v: unknown): ContentSyncCommand {
 		slug: text(i.slug, "CONTENT_SYNC_SLUG_INVALID"),
 		publishState: state,
 		fields: structuredClone(fields),
-		media: (i.media as unknown[]).map((x: unknown) => media(x)),
+		media: i.media.map((x: unknown) => media(x)),
 	};
 	if (state === "scheduled") o.scheduledFor = iso(i.scheduledFor, "CONTENT_SYNC_SCHEDULE_REQUIRED");
 	else if (i.scheduledFor !== undefined)
 		o.scheduledFor = iso(i.scheduledFor, "CONTENT_SYNC_SCHEDULE_INVALID");
 	for (const k of ["contentId", "previousSlug", "expectedRevision"])
 		if (i[k] !== undefined) o[k] = text(i[k], `CONTENT_SYNC_${k.toUpperCase()}_INVALID`);
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized command is constructed only from runtime-validated fields above.
 	return o as unknown as ContentSyncCommand;
 }
 
@@ -360,7 +362,7 @@ function evidence(v: unknown): Record<string, unknown> {
 		["snapshotId", "metricIds", "observation", "strength"],
 		"IMPROVEMENT_PROPOSAL_EVIDENCE",
 	);
-	if (!["weak", "moderate", "strong"].includes(i.strength as string))
+	if (typeof i.strength !== "string" || !["weak", "moderate", "strong"].includes(i.strength))
 		fail("IMPROVEMENT_PROPOSAL_EVIDENCE_STRENGTH_INVALID");
 	return {
 		snapshotId: text(i.snapshotId, "IMPROVEMENT_PROPOSAL_SNAPSHOT_ID_INVALID"),
@@ -402,7 +404,7 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 		"IMPROVEMENT_PROPOSAL",
 	);
 	ver(i, "IMPROVEMENT_PROPOSAL");
-	if (!["proposed", "approved", "rejected", "implemented", "reverted"].includes(i.status as string))
+	if (typeof i.status !== "string" || !["proposed", "approved", "rejected", "implemented", "reverted"].includes(i.status))
 		fail("IMPROVEMENT_PROPOSAL_STATUS_INVALID");
 	if (!Array.isArray(i.evidence) || !i.evidence.length || !Array.isArray(i.proposedChanges))
 		fail("IMPROVEMENT_PROPOSAL_EVIDENCE_REQUIRED");
@@ -413,7 +415,7 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 		status: i.status,
 		diagnosis: text(i.diagnosis, "IMPROVEMENT_PROPOSAL_DIAGNOSIS_INVALID"),
 		uncertainty: strings(i.uncertainty, "IMPROVEMENT_PROPOSAL_UNCERTAINTY", true),
-		evidence: (i.evidence as unknown[]).map((x: unknown) => evidence(x)),
+		evidence: i.evidence.map((x: unknown) => evidence(x)),
 		hypothesis: text(i.hypothesis, "IMPROVEMENT_PROPOSAL_HYPOTHESIS_INVALID"),
 		expectedOutcome: text(i.expectedOutcome, "IMPROVEMENT_PROPOSAL_EXPECTED_OUTCOME_INVALID"),
 		regressionRisks: strings(i.regressionRisks, "IMPROVEMENT_PROPOSAL_REGRESSION_RISKS"),
@@ -430,7 +432,7 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 			true,
 		),
 	};
-	o.proposedChanges = (i.proposedChanges as unknown[]).map((change: unknown) => {
+	o.proposedChanges = i.proposedChanges.map((change: unknown) => {
 		const x = exact(change, ["repository", "path", "summary"], "IMPROVEMENT_PROPOSAL_CHANGE");
 		const summary = text(x.summary, "IMPROVEMENT_PROPOSAL_CHANGE_SUMMARY_INVALID");
 		if (DIRECT_VALUE.test(summary)) fail("IMPROVEMENT_PROPOSAL_DIRECT_PUBLISH_FORBIDDEN");
@@ -445,7 +447,7 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 	if (i.proposalType !== undefined) {
 		if (
 			!["content", "seo", "cta", "lp", "experiment", "custom_code", "publish_plan"].includes(
-				i.proposalType as string,
+				typeof i.proposalType === "string" ? i.proposalType : "",
 			)
 		)
 			fail("IMPROVEMENT_PROPOSAL_TYPE_INVALID");
@@ -491,10 +493,10 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 				"quality_evaluate",
 				"approval",
 				"knowledge_activate",
-			].includes(x.operationType as string)
+			].includes(typeof x.operationType === "string" ? x.operationType : "")
 		)
 			fail("IMPROVEMENT_PROPOSAL_OPERATION_TYPE_INVALID");
-		if (!["low", "medium", "high", "critical"].includes(x.operationRisk as string))
+		if (typeof x.operationRisk !== "string" || !["low", "medium", "high", "critical"].includes(x.operationRisk))
 			fail("IMPROVEMENT_PROPOSAL_OPERATION_RISK_INVALID");
 		o.opsImpact = {
 			operationType: text(x.operationType, "IMPROVEMENT_PROPOSAL_OPERATION_TYPE_INVALID"),
@@ -504,6 +506,7 @@ export function validateImprovementProposal(v: unknown): ImprovementProposal {
 		};
 	}
 	scan(i);
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized proposal is constructed only from runtime-validated fields above.
 	return o as unknown as ImprovementProposal;
 }
 
@@ -526,7 +529,7 @@ export function validateContentSyncResult(v: unknown): ContentSyncResult {
 		"CONTENT_SYNC_RESULT",
 	);
 	ver(i, "CONTENT_SYNC_RESULT");
-	if (!["accepted", "skipped", "succeeded", "conflict", "failed"].includes(i.status as string))
+	if (typeof i.status !== "string" || !["accepted", "skipped", "succeeded", "conflict", "failed"].includes(i.status))
 		fail("CONTENT_SYNC_RESULT_STATUS_INVALID");
 	const o: Record<string, unknown> = {
 		version: 1,
@@ -538,6 +541,7 @@ export function validateContentSyncResult(v: unknown): ContentSyncResult {
 	};
 	for (const k of ["contentId", "revision", "errorCode", "errorMessage"])
 		if (i[k] !== undefined) o[k] = text(i[k], `CONTENT_SYNC_RESULT_${k.toUpperCase()}_INVALID`);
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized result is constructed only from runtime-validated fields above.
 	return o as unknown as ContentSyncResult;
 }
 
@@ -633,7 +637,7 @@ export function validateMetricSnapshot(v: unknown): MetricSnapshot {
 					["id", "label", "numerator", "denominator", "unit", "source"],
 					"METRIC_SNAPSHOT_DEFINITION",
 				);
-				if (!["count", "ratio", "currency", "duration", "position"].includes(x.unit as string))
+				if (typeof x.unit !== "string" || !["count", "ratio", "currency", "duration", "position"].includes(x.unit))
 					fail("METRIC_SNAPSHOT_DEFINITION_UNIT_INVALID");
 				const o: Record<string, unknown> = {
 					id: text(x.id, "METRIC_SNAPSHOT_DEFINITION_ID_INVALID"),
@@ -666,6 +670,7 @@ export function validateMetricSnapshot(v: unknown): MetricSnapshot {
 	};
 	if (i.sourceCommit !== undefined)
 		o.sourceCommit = sha(i.sourceCommit, "METRIC_SNAPSHOT_SOURCE_COMMIT_INVALID");
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized snapshot is constructed only from runtime-validated fields above.
 	return o as unknown as MetricSnapshot;
 }
 
@@ -692,7 +697,7 @@ export function validateExperimentRecord(v: unknown): ExperimentRecord {
 		"EXPERIMENT_RECORD",
 	);
 	ver(i, "EXPERIMENT_RECORD");
-	if (!["draft", "running", "paused", "completed", "reverted"].includes(i.status as string))
+	if (typeof i.status !== "string" || !["draft", "running", "paused", "completed", "reverted"].includes(i.status))
 		fail("EXPERIMENT_RECORD_STATUS_INVALID");
 	const vs = Array.isArray(i.variants) ? i.variants : fail("EXPERIMENT_RECORD_VARIANTS_REQUIRED");
 	if (vs.length < 2) fail("EXPERIMENT_RECORD_VARIANTS_REQUIRED");
@@ -734,11 +739,13 @@ export function validateExperimentRecord(v: unknown): ExperimentRecord {
 	if (
 		i.startedAt !== undefined &&
 		i.endedAt !== undefined &&
-		Date.parse(i.endedAt as string) < Date.parse(i.startedAt as string)
+		typeof i.endedAt === "string" &&
+		typeof i.startedAt === "string" &&
+		Date.parse(i.endedAt) < Date.parse(i.startedAt)
 	)
 		fail("EXPERIMENT_RECORD_DATE_ORDER_INVALID");
 	if (i.decision !== undefined) {
-		if (!["win", "loss", "inconclusive", "reverted"].includes(i.decision as string))
+		if (typeof i.decision !== "string" || !["win", "loss", "inconclusive", "reverted"].includes(i.decision))
 			fail("EXPERIMENT_RECORD_DECISION_INVALID");
 		o.decision = i.decision;
 	}
@@ -749,6 +756,7 @@ export function validateExperimentRecord(v: unknown): ExperimentRecord {
 		if (!url.startsWith("https://")) fail("EXPERIMENT_RECORD_URL_INVALID");
 		o.sourcePullRequestUrl = url;
 	}
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized experiment is constructed only from runtime-validated fields above.
 	return o as unknown as ExperimentRecord;
 }
 
@@ -775,7 +783,7 @@ export function validateTraceabilityRecord(v: unknown): TraceabilityRecord {
 	const checks = Array.isArray(i.checks)
 		? i.checks.map((check) => {
 				const x = exact(check, ["name", "status", "url"], "TRACEABILITY_CHECK");
-				if (!["passed", "failed", "skipped"].includes(x.status as string))
+				if (typeof x.status !== "string" || !["passed", "failed", "skipped"].includes(x.status))
 					fail("TRACEABILITY_CHECK_STATUS_INVALID");
 				const o: Record<string, unknown> = {
 					name: text(x.name, "TRACEABILITY_CHECK_NAME_INVALID"),
@@ -806,5 +814,6 @@ export function validateTraceabilityRecord(v: unknown): TraceabilityRecord {
 	}
 	if (i.approvedAt !== undefined)
 		o.approvedAt = iso(i.approvedAt, "TRACEABILITY_RECORD_APPROVED_AT_INVALID");
+	// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the normalized record is constructed only from runtime-validated fields above.
 	return o as unknown as TraceabilityRecord;
 }

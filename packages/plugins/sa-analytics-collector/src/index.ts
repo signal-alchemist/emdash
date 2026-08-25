@@ -2,7 +2,7 @@ import { definePlugin } from "emdash";
 
 import type { AnalyticsCollectorOptions } from "./descriptor.js";
 import { analyticsPageFragments } from "./fragments.js";
-import { ingestAnalytics, ANALYTICS_BODY_LIMIT, type AnalyticsIngressOptions } from "./ingress.js";
+import { ingestAnalytics, ANALYTICS_BODY_LIMIT } from "./ingress.js";
 
 export { analyticsCollectorPlugin } from "./descriptor.js";
 export type { AnalyticsCollectorOptions } from "./descriptor.js";
@@ -32,7 +32,7 @@ export function createPlugin(options: AnalyticsCollectorOptions = {}) {
 				public: true,
 				bodyLimit: ANALYTICS_BODY_LIMIT,
 				handler: (ctx) =>
-					ingestAnalytics(ctx, options.ingress as AnalyticsIngressOptions | undefined),
+					ingestAnalytics(ctx, options.ingress),
 			},
 		},
 	});

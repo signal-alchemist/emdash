@@ -79,7 +79,7 @@ describe("durable analytics service production handler", () => {
 			ingestAnalyticsBatch(request(batch(), "barrier"), second, { secret, now: clock }),
 		]);
 		const results = await barrier;
-		expect(results.map((r) => r.status).toSorted()).toEqual([202, 202]);
+		expect(results.map((r) => r.status).toSorted((left, right) => left - right)).toEqual([202, 202]);
 		expect(arrived).toBe(2);
 		expect((await backend.page(null, 10)).rows).toHaveLength(1);
 	});
