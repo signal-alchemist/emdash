@@ -39,6 +39,7 @@ async function runMigrations(db: Kysely<any>) {
 		.addColumn("id", "text", (col) => col.primaryKey())
 		.addColumn("slug", "text", (col) => col.notNull().unique())
 		.addColumn("supports", "text")
+		.addColumn("has_seo", "integer", (col) => col.notNull().defaultTo(0))
 		.execute();
 	await db.schema
 		.createTable("_emdash_fields")
@@ -435,6 +436,100 @@ describe("Plugin integration: sandboxed-test plugin operations", () => {
 			expect(JSON.parse(draft.data)).toEqual({ title: "Plugin title", body: "Live body" });
 		});
 
+		it("preserves fenced update, publish, and unpublish semantics", async () => {
+			const handler = makeWriteHandler();
+			const created = await call(handler, "content/create", {
+				collection: "posts",
+				data: { title: "Original", slug: "original" },
+			});
+			const id = (created.result as { id: string }).id;
+			const initial = await call(handler, "content/get", { collection: "posts", id });
+			const initialRevision = (initial.result as { revision: string }).revision;
+
+			const updated = await call(handler, "content/update", {
+				collection: "posts",
+				id,
+				data: { title: "Updated" },
+				options: { expectedRevision: initialRevision, slug: "updated-slug" },
+			});
+			expect(updated.error).toBeUndefined();
+			expect(updated.result).toMatchObject({
+				data: { title: "Updated" },
+				slug: "updated-slug",
+				revision: expect.any(String),
+			});
+			const updatedRevision = (updated.result as { revision: string }).revision;
+
+			const beforeStale = await db
+				.selectFrom("ec_posts" as any)
+				.selectAll()
+				.where("id", "=", id)
+				.executeTakeFirstOrThrow();
+			const stale = await call(handler, "content/update", {
+				collection: "posts",
+				id,
+				data: { title: "Stale" },
+				options: { expectedRevision: initialRevision, slug: "stale-slug" },
+			});
+			expect(JSON.stringify(stale.error)).toMatch(/conflict/i);
+			expect(
+				await db
+					.selectFrom("ec_posts" as any)
+					.selectAll()
+					.where("id", "=", id)
+					.executeTakeFirstOrThrow(),
+			).toEqual(beforeStale);
+
+			const published = await call(handler, "content/publish", {
+				collection: "posts",
+				id,
+				options: { expectedRevision: updatedRevision },
+			});
+			expect(published.result).toMatchObject({ status: "published", revision: expect.any(String) });
+			const publishedRevision = (published.result as { revision: string }).revision;
+			expect(
+				(await call(handler, "content/get", { collection: "posts", id })).result,
+			).toMatchObject({ status: "published", revision: publishedRevision });
+
+			const unpublished = await call(handler, "content/unpublish", {
+				collection: "posts",
+				id,
+				options: { expectedRevision: publishedRevision },
+			});
+			expect(unpublished.result).toMatchObject({ status: "draft", revision: expect.any(String) });
+			const unpublishedRevision = (unpublished.result as { revision: string }).revision;
+			expect(
+				(await call(handler, "content/get", { collection: "posts", id })).result,
+			).toMatchObject({ status: "draft", revision: unpublishedRevision });
+
+			const idempotent = await call(handler, "content/unpublish", {
+				collection: "posts",
+				id,
+				options: { expectedRevision: unpublishedRevision },
+			});
+			expect(idempotent.result).toMatchObject({
+				status: "draft",
+				revision: unpublishedRevision,
+			});
+		});
+
+		it("rejects malformed mutation options", async () => {
+			const handler = makeWriteHandler();
+			for (const [method, options] of [
+				["content/update", { expectedRevision: 1 }],
+				["content/publish", { publishedAt: false }],
+				["content/unpublish", { unknown: true }],
+			] as const) {
+				const result = await call(handler, method, {
+					collection: "posts",
+					id: "missing",
+					data: {},
+					options,
+				});
+				expect(JSON.stringify(result.error)).toMatch(/invalid content .* options/i);
+			}
+		});
+
 		it("forwards and normalizes an explicit locale", async () => {
 			const handler = makeWriteHandler({ defaultLocale: "en", locales: ["en", "zh-TW"] });
 
@@ -516,6 +611,19 @@ describe("Plugin integration: sandboxed-test plugin operations", () => {
 			).toHaveLength(0);
 		});
 	});
+
+	it.each(["content/update", "content/publish", "content/unpublish"])(
+		"rejects %s without write:content",
+		async (method) => {
+			const result = await call(makePluginHandler(), method, {
+				collection: "posts",
+				id: "post-1",
+				data: {},
+				options: {},
+			});
+			expect(result.error).toContain("Missing capability: write:content");
+		},
+	);
 
 	// ── Capability enforcement matches real plugin config ─────────────────
 

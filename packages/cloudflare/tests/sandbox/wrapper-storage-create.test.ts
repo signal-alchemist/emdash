@@ -60,4 +60,56 @@ describe("Cloudflare generated storage wrapper", () => {
 			["items", "one", { ok: true }],
 		]);
 	});
+
+	it("forwards revision-aware content mutation options", async () => {
+		const calls: Array<[string, unknown[]]> = [];
+		const bridge = new Proxy(
+			{},
+			{
+				get:
+					(_target, method: string) =>
+					(...args: unknown[]) => {
+						calls.push([method, args]);
+						return Promise.resolve({ revision: "next" });
+					},
+			},
+		);
+		const ctx = extractContext(
+			generatePluginWrapper({
+				id: "plugin",
+				name: "Plugin",
+				version: "1.0.0",
+				capabilities: ["content:write"],
+				storage: {},
+			} as never),
+			{ BRIDGE: bridge },
+		);
+
+		await ctx.content.update(
+			"posts",
+			"post-1",
+			{ title: "next" },
+			{
+				expectedRevision: "rev-1",
+				slug: "next-slug",
+			},
+		);
+		await ctx.content.publish("posts", "post-1", {
+			expectedRevision: "rev-2",
+			publishedAt: "2026-08-25T00:00:00.000Z",
+		});
+		await ctx.content.unpublish("posts", "post-1", { expectedRevision: "rev-3" });
+
+		expect(calls).toEqual([
+			[
+				"contentUpdate",
+				["posts", "post-1", { title: "next" }, { expectedRevision: "rev-1", slug: "next-slug" }],
+			],
+			[
+				"contentPublish",
+				["posts", "post-1", { expectedRevision: "rev-2", publishedAt: "2026-08-25T00:00:00.000Z" }],
+			],
+			["contentUnpublish", ["posts", "post-1", { expectedRevision: "rev-3" }]],
+		]);
+	});
 });

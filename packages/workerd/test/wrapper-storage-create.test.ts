@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+
 import { generatePluginWrapper } from "../src/sandbox/wrapper.js";
 
 function extractContext(source: string, bridgeCall: (method: string, body: unknown) => unknown) {
@@ -16,7 +17,9 @@ function extractContext(source: string, bridgeCall: (method: string, body: unkno
 	}
 	if (start < 0 || end < 0) throw new Error("createContext not found");
 	// oxlint-disable-next-line typescript/no-implied-eval -- this isolated test evaluates the generated wrapper source under test.
-	return new Function("bridgeCall", `${source.slice(start, end + 1)}; return createContext;`)(bridgeCall)();
+	return new Function("bridgeCall", `${source.slice(start, end + 1)}; return createContext;`)(
+		bridgeCall,
+	)();
 }
 
 describe("workerd storage collection wrapper", () => {
@@ -50,6 +53,72 @@ describe("workerd storage collection wrapper", () => {
 		expect(calls).toEqual([
 			["storage/create", { collection: "items", id: "id", data: { value: 1 } }],
 			["storage/create", { collection: "items", id: "id", data: { value: 1 } }],
+		]);
+	});
+
+	it("forwards revision-aware content mutation options", async () => {
+		const calls: Array<[string, unknown]> = [];
+		const context = extractContext(
+			generatePluginWrapper(
+				{
+					id: "plugin",
+					name: "Plugin",
+					version: "1.0.0",
+					capabilities: ["write:content"],
+					storage: [],
+				} as never,
+				{ backingServiceUrl: "http://bridge", authToken: "token", invokeToken: "invoke" },
+			),
+			(method, body) => {
+				calls.push([method, body]);
+				return Promise.resolve({ revision: "next" });
+			},
+		);
+
+		await context.content.update(
+			"posts",
+			"post-1",
+			{ title: "next" },
+			{
+				expectedRevision: "rev-1",
+				slug: "next-slug",
+			},
+		);
+		await context.content.publish("posts", "post-1", {
+			expectedRevision: "rev-2",
+			publishedAt: "2026-08-25T00:00:00.000Z",
+		});
+		await context.content.unpublish("posts", "post-1", { expectedRevision: "rev-3" });
+
+		expect(calls).toEqual([
+			[
+				"content/update",
+				{
+					collection: "posts",
+					id: "post-1",
+					data: { title: "next" },
+					options: { expectedRevision: "rev-1", slug: "next-slug" },
+				},
+			],
+			[
+				"content/publish",
+				{
+					collection: "posts",
+					id: "post-1",
+					options: {
+						expectedRevision: "rev-2",
+						publishedAt: "2026-08-25T00:00:00.000Z",
+					},
+				},
+			],
+			[
+				"content/unpublish",
+				{
+					collection: "posts",
+					id: "post-1",
+					options: { expectedRevision: "rev-3" },
+				},
+			],
 		]);
 	});
 });

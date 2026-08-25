@@ -112,8 +112,17 @@ async function bridgeCall(method, body) {
 				});
 				throw error;
 			}
+			if (
+				payload?.error?.code === "CONFLICT" &&
+				payload.error.status === 409 &&
+				typeof payload.error.message === "string"
+			) {
+				throw Object.assign(new Error(payload.error.message), payload.error, {
+					name: "PluginRevisionConflictError",
+				});
+			}
 		} catch (error) {
-			if (sandboxRouteErrorDetails(error)) throw error;
+			if (sandboxRouteErrorDetails(error) || error?.code === "CONFLICT") throw error;
 		}
 		throw new Error("Bridge call " + method + " failed: " + text);
 	}
@@ -165,7 +174,9 @@ function createContext() {
 		get: (collection, id) => bridgeCall("content/get", { collection, id }),
 		list: (collection, opts) => bridgeCall("content/list", { collection, ...opts }),
 		create: (collection, data, options) => bridgeCall("content/create", { collection, data, options }),
-		update: (collection, id, data) => bridgeCall("content/update", { collection, id, data }),
+		update: (collection, id, data, options) => bridgeCall("content/update", { collection, id, data, options }),
+		publish: (collection, id, options) => bridgeCall("content/publish", { collection, id, options }),
+		unpublish: (collection, id, options) => bridgeCall("content/unpublish", { collection, id, options }),
 		delete: (collection, id) => bridgeCall("content/delete", { collection, id }),
 		createMany: (collection, items) => bridgeCall("content/createMany", { collection, items }),
 		updateMany: (collection, items) => bridgeCall("content/updateMany", { collection, items }),

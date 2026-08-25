@@ -9,9 +9,17 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ContentCreateOptions, Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
+import type {
+	ContentCreateOptions,
+	ContentPublishOptions,
+	ContentUpdateOptions,
+	Database,
+	I18nConfig,
+	SandboxEmailSendCallback,
+} from "emdash";
 import {
-	ContentRepository,
+	createContentAccess,
+	createContentAccessWithWrite,
 	createSandboxRouteError,
 	getSandboxRouteErrorDetails,
 	ulid,
@@ -27,6 +35,10 @@ import {
 	assertStorageCollectionDeclared,
 	storageCreate as createStorageRow,
 } from "./storage-create.js";
+
+type PluginContentItem = NonNullable<
+	Awaited<ReturnType<ReturnType<typeof createContentAccess>["get"]>>
+>;
 
 /** Regex to validate collection names (prevent SQL injection) */
 const COLLECTION_NAME_REGEX = /^[a-z][a-z0-9_]*$/;
@@ -165,6 +177,47 @@ function columnStringArray(value: unknown): string[] {
 /** Type guard for plain JSON objects. */
 function isJsonObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function contentMutationOptions(value: unknown, kind: "update"): ContentUpdateOptions;
+function contentMutationOptions(value: unknown, kind: "publish"): ContentPublishOptions;
+function contentMutationOptions(value: unknown, kind: "unpublish"): { expectedRevision?: string };
+function contentMutationOptions(
+	value: unknown,
+	kind: "update" | "publish" | "unpublish",
+): ContentUpdateOptions | ContentPublishOptions | { expectedRevision?: string } {
+	if (value === undefined) return {};
+	if (!isJsonObject(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	const allowed =
+		kind === "update"
+			? new Set(["expectedRevision", "slug"])
+			: kind === "publish"
+				? new Set(["expectedRevision", "publishedAt"])
+				: new Set(["expectedRevision"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (value.expectedRevision !== undefined && typeof value.expectedRevision !== "string") {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (
+		kind === "update" &&
+		value.slug !== undefined &&
+		value.slug !== null &&
+		typeof value.slug !== "string"
+	) {
+		throw new Error("Invalid content update options");
+	}
+	if (
+		kind === "publish" &&
+		value.publishedAt !== undefined &&
+		typeof value.publishedAt !== "string"
+	) {
+		throw new Error("Invalid content publish options");
+	}
+	return value;
 }
 
 /** Parse a JSON string column into an object (`null` on anything else). */
@@ -492,17 +545,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 	// Content Operations - capability-gated
 	// =========================================================================
 
-	async contentGet(
-		collection: string,
-		id: string,
-	): Promise<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	} | null> {
+	async contentGet(collection: string, id: string): Promise<PluginContentItem | null> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("content:read")) {
 			throw new Error("Missing capability: content:read");
@@ -511,19 +554,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (!COLLECTION_NAME_REGEX.test(collection)) {
 			throw new Error(`Invalid collection name: ${collection}`);
 		}
-		try {
-			// Content tables use ec_${collection} naming (no leading underscore)
-			// Exclude soft-deleted items
-			const result = await this.env.DB.prepare(
-				`SELECT * FROM ec_${collection} WHERE id = ? AND deleted_at IS NULL`,
-			)
-				.bind(id)
-				.first();
-			if (!result) return null;
-			return rowToContentItem(collection, result);
-		} catch {
-			return null;
-		}
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccess(db).get(collection, id);
 	}
 
 	async contentList(
@@ -667,14 +699,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		collection: string,
 		id: string,
 		data: Record<string, unknown>,
-	): Promise<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	}> {
+		options?: unknown,
+	): Promise<PluginContentItem> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("content:write")) {
 			throw new Error("Missing capability: content:write");
@@ -682,23 +708,51 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (!COLLECTION_NAME_REGEX.test(collection)) {
 			throw new Error(`Invalid collection name: ${collection}`);
 		}
-		await this.assertMediaUsageActivationWriteAllowed();
+		const parsed = contentMutationOptions(options, "update");
 		const db = new Kysely<Database>({
 			dialect: new D1Dialect({ database: this.env.DB }),
 		});
-		const updated = await new ContentRepository(db).updateDraftAware(collection, id, {
-			data,
-			status: typeof data.status === "string" ? data.status : undefined,
-			slug: data.slug === undefined ? undefined : typeof data.slug === "string" ? data.slug : null,
-		});
-		return {
-			id: updated.id,
-			type: updated.type,
-			data: updated.data,
-			createdAt: updated.createdAt,
-			updatedAt: updated.updatedAt,
-			locale: updated.locale ?? "en",
-		};
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).update(collection, id, data, parsed);
+	}
+
+	async contentPublish(
+		collection: string,
+		id: string,
+		options?: unknown,
+	): Promise<PluginContentItem> {
+		const { capabilities } = this.ctx.props;
+		if (!capabilities.includes("content:write")) {
+			throw new Error("Missing capability: content:write");
+		}
+		if (!COLLECTION_NAME_REGEX.test(collection)) {
+			throw new Error(`Invalid collection name: ${collection}`);
+		}
+		const parsed = contentMutationOptions(options, "publish");
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).publish(collection, id, parsed);
+	}
+
+	async contentUnpublish(
+		collection: string,
+		id: string,
+		options?: unknown,
+	): Promise<PluginContentItem> {
+		const { capabilities } = this.ctx.props;
+		if (!capabilities.includes("content:write")) {
+			throw new Error("Missing capability: content:write");
+		}
+		if (!COLLECTION_NAME_REGEX.test(collection)) {
+			throw new Error(`Invalid collection name: ${collection}`);
+		}
+		const parsed = contentMutationOptions(options, "unpublish");
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).unpublish(collection, id, parsed);
 	}
 
 	async contentDelete(collection: string, id: string): Promise<boolean> {

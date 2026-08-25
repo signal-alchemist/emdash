@@ -126,7 +126,9 @@ function createContext(env) {
 		get: (collection, id) => bridge.contentGet(collection, id),
 		list: (collection, opts) => bridge.contentList(collection, opts),
 		create: (collection, data, options) => bridge.contentCreate(collection, data, options),
-		update: (collection, id, data) => bridge.contentUpdate(collection, id, data),
+		update: (collection, id, data, options) => bridge.contentUpdate(collection, id, data, options),
+		publish: (collection, id, options) => bridge.contentPublish(collection, id, options),
+		unpublish: (collection, id, options) => bridge.contentUnpublish(collection, id, options),
 		delete: (collection, id) => bridge.contentDelete(collection, id)
 	};
 	

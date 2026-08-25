@@ -15,17 +15,28 @@
  */
 
 import {
-	ContentRepository,
+	createContentAccess,
+	createContentAccessWithWrite,
 	createHttpAccess,
 	createSandboxRouteErrorEnvelope,
 	createUnrestrictedHttpAccess,
 	PluginStorageRepository,
 	resolveContentCreateLocale,
 } from "emdash";
-import type { Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
+import type {
+	ContentPublishOptions,
+	ContentUpdateOptions,
+	Database,
+	I18nConfig,
+	SandboxEmailSendCallback,
+} from "emdash";
 import type { Kysely } from "kysely";
 
 import { mediaSha256 } from "./media-sha256.js";
+
+type PluginContentItem = NonNullable<
+	Awaited<ReturnType<ReturnType<typeof createContentAccess>["get"]>>
+>;
 
 /**
  * Schema view of a content table (ec_${collection}) for kysely. The standard
@@ -117,6 +128,17 @@ export interface BridgeHandlerOptions {
 	storage?: BridgeStorage | null;
 }
 
+function isPluginRevisionConflict(
+	error: unknown,
+): error is { code: "CONFLICT"; status: 409; message: string } {
+	return (
+		isRecord(error) &&
+		error.code === "CONFLICT" &&
+		error.status === 409 &&
+		typeof error.message === "string"
+	);
+}
+
 /**
  * Create a bridge handler function scoped to a specific plugin.
  * Returns an async function that takes a Request and returns a Response.
@@ -144,6 +166,12 @@ export function createBridgeHandler(
 			const result = await dispatch(opts, method, body);
 			return Response.json({ result });
 		} catch (error) {
+			if (isPluginRevisionConflict(error)) {
+				return Response.json(
+					{ error: { code: error.code, message: error.message, status: error.status } },
+					{ status: error.status },
+				);
+			}
 			const sandboxRouteError = createSandboxRouteErrorEnvelope(error);
 			if (sandboxRouteError) {
 				return Response.json(
@@ -209,6 +237,25 @@ async function dispatch(
 				requireString(body, "collection"),
 				requireString(body, "id"),
 				requireRecord(body, "data"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "update"),
+			);
+		case "content/publish":
+			requireCapability(opts, "write:content");
+			await opts.beforeContentWrite?.();
+			return contentPublish(
+				db,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "publish"),
+			);
+		case "content/unpublish":
+			requireCapability(opts, "write:content");
+			await opts.beforeContentWrite?.();
+			return contentUnpublish(
+				db,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "unpublish"),
 			);
 		case "content/delete":
 			requireCapability(opts, "write:content");
@@ -482,16 +529,71 @@ function optionalRecord(
 	return value;
 }
 
-function requireMediaUploadOptions(value: unknown): { sha256?: string; alt?: string; deduplicate?: boolean } {
+function requireMediaUploadOptions(value: unknown): {
+	sha256?: string;
+	alt?: string;
+	deduplicate?: boolean;
+} {
 	if (value === undefined) return {};
 	if (!isRecord(value)) throw new Error("media/upload: options must be an object");
 	for (const key of Object.keys(value)) {
-		if (key !== "sha256" && key !== "alt" && key !== "deduplicate") throw new Error(`media/upload: unknown option ${key}`);
+		if (key !== "sha256" && key !== "alt" && key !== "deduplicate")
+			throw new Error(`media/upload: unknown option ${key}`);
 	}
-	if (value.sha256 !== undefined && typeof value.sha256 !== "string") throw new Error("media/upload: sha256 must be a string");
-	if (value.alt !== undefined && typeof value.alt !== "string") throw new Error("media/upload: alt must be a string");
-	if (value.deduplicate !== undefined && typeof value.deduplicate !== "boolean") throw new Error("media/upload: deduplicate must be a boolean");
+	if (value.sha256 !== undefined && typeof value.sha256 !== "string")
+		throw new Error("media/upload: sha256 must be a string");
+	if (value.alt !== undefined && typeof value.alt !== "string")
+		throw new Error("media/upload: alt must be a string");
+	if (value.deduplicate !== undefined && typeof value.deduplicate !== "boolean")
+		throw new Error("media/upload: deduplicate must be a boolean");
 	return { sha256: value.sha256, alt: value.alt, deduplicate: value.deduplicate };
+}
+
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "update",
+): ContentUpdateOptions;
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "publish",
+): ContentPublishOptions;
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "unpublish",
+): { expectedRevision?: string };
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "update" | "publish" | "unpublish",
+): ContentUpdateOptions | ContentPublishOptions | { expectedRevision?: string } {
+	if (value === undefined) return {};
+	const allowed =
+		kind === "update"
+			? new Set(["expectedRevision", "slug"])
+			: kind === "publish"
+				? new Set(["expectedRevision", "publishedAt"])
+				: new Set(["expectedRevision"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (value.expectedRevision !== undefined && typeof value.expectedRevision !== "string") {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (
+		kind === "update" &&
+		value.slug !== undefined &&
+		value.slug !== null &&
+		typeof value.slug !== "string"
+	) {
+		throw new Error("Invalid content update options");
+	}
+	if (
+		kind === "publish" &&
+		value.publishedAt !== undefined &&
+		typeof value.publishedAt !== "string"
+	) {
+		throw new Error("Invalid content publish options");
+	}
+	return value;
 }
 
 function requireStringArray(body: Record<string, unknown>, key: string): string[] {
@@ -724,28 +826,9 @@ async function contentGet(
 	db: Kysely<Database>,
 	collection: string,
 	id: string,
-): Promise<{
-	id: string;
-	type: string;
-	data: Record<string, unknown>;
-	createdAt: string;
-	updatedAt: string;
-	locale: string;
-} | null> {
+): Promise<PluginContentItem | null> {
 	validateCollectionName(collection);
-	const table = `ec_${collection}`;
-	try {
-		const row = await asContentDb(db)
-			.selectFrom(table)
-			.where("id", "=", id)
-			.where("deleted_at", "is", null)
-			.selectAll()
-			.executeTakeFirst();
-		if (!row) return null;
-		return rowToContentItem(collection, row);
-	} catch {
-		return null;
-	}
+	return createContentAccess(db).get(collection, id);
 }
 
 async function contentList(
@@ -863,28 +946,30 @@ async function contentUpdate(
 	collection: string,
 	id: string,
 	data: Record<string, unknown>,
-): Promise<{
-	id: string;
-	type: string;
-	data: Record<string, unknown>;
-	createdAt: string;
-	updatedAt: string;
-	locale: string;
-}> {
+	options: ContentUpdateOptions,
+): Promise<PluginContentItem> {
 	validateCollectionName(collection);
-	const updated = await new ContentRepository(db).updateDraftAware(collection, id, {
-		data,
-		status: typeof data.status === "string" ? data.status : undefined,
-		slug: data.slug === undefined ? undefined : typeof data.slug === "string" ? data.slug : null,
-	});
-	return {
-		id: updated.id,
-		type: updated.type,
-		data: updated.data,
-		createdAt: updated.createdAt,
-		updatedAt: updated.updatedAt,
-		locale: updated.locale ?? "en",
-	};
+	return createContentAccessWithWrite(db).update(collection, id, data, options);
+}
+
+async function contentPublish(
+	db: Kysely<Database>,
+	collection: string,
+	id: string,
+	options: ContentPublishOptions,
+): Promise<PluginContentItem> {
+	validateCollectionName(collection);
+	return createContentAccessWithWrite(db).publish(collection, id, options);
+}
+
+async function contentUnpublish(
+	db: Kysely<Database>,
+	collection: string,
+	id: string,
+	options: { expectedRevision?: string },
+): Promise<PluginContentItem> {
+	validateCollectionName(collection);
+	return createContentAccessWithWrite(db).unpublish(collection, id, options);
 }
 
 async function contentDelete(
@@ -942,23 +1027,14 @@ async function contentUpdateMany(
 	db: Kysely<Database>,
 	collection: string,
 	items: Array<{ id: string; data: Record<string, unknown> }>,
-): Promise<
-	Array<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	}>
-> {
+): Promise<PluginContentItem[]> {
 	if (items.length > MAX_BATCH_SIZE) {
 		throw new Error(`Batch size ${items.length} exceeds maximum of ${MAX_BATCH_SIZE}`);
 	}
 	return db.transaction().execute(async (trx) => {
 		const results = [];
 		for (const item of items) {
-			results.push(await contentUpdate(trx, collection, item.id, item.data));
+			results.push(await contentUpdate(trx, collection, item.id, item.data, {}));
 		}
 		return results;
 	});
