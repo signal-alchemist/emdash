@@ -12,6 +12,7 @@ export function contentInsightsPlugin(): PluginDescriptor {
 			snapshots: { indexes: ["targetKey", "generatedAt", "snapshotId"] },
 			experiments: { indexes: ["targetKey", "status", "updatedAt"] },
 			proposals: { indexes: ["targetKey", "status", "createdAt"] },
+			record_claims: { indexes: ["kind", "recordId", "revision", "digest"] },
 		},
 		adminPages: [{ path: "/insights", label: "Content Insights", icon: "chart-line-up" }],
 		adminWidgets: [{ id: "insight-summary", title: "Content Insights", size: "half" }],

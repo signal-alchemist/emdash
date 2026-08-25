@@ -73,7 +73,7 @@ describe("marketing automation plugin package contracts", () => {
 		[
 			"../../sa-content-insights/emdash-plugin.jsonc",
 			"sa-content-insights",
-			["snapshots", "experiments", "proposals"],
+			["snapshots", "experiments", "proposals", "record_claims"],
 		],
 		[
 			"../../sa-github-content-sync/emdash-plugin.jsonc",
@@ -111,7 +111,7 @@ describe("marketing automation plugin package contracts", () => {
 				id: "sa-content-insights",
 				capabilities: ["content:read"],
 				allowedHosts: [],
-				storage: ["snapshots", "experiments", "proposals"],
+				storage: ["snapshots", "experiments", "proposals", "record_claims"],
 			},
 		],
 		[

@@ -1,20 +1,21 @@
 {
-  "$schema": "../../plugin-cli/schemas/emdash-plugin.schema.json",
-  "slug": "sa-content-insights",
-  "publisher": "signal-alchemist.github.io", // TODO: publication is blocked until this handle resolves to the org's verified atproto DID.
-  "license": "MIT",
-  "author": { "name": "signal-alchemist" },
-  "security": { "url": "https://github.com/signal-alchemist/emdash/security/advisories/new" },
-  "description": "Editorial analytics snapshots, experiments, and improvement proposals for EmDash.",
-  "capabilities": ["content:read"],
-  "allowedHosts": [],
-  "storage": {
-    "snapshots": { "indexes": ["targetKey", "generatedAt", "snapshotId"] },
-    "experiments": { "indexes": ["targetKey", "status", "updatedAt"] },
-    "proposals": { "indexes": ["targetKey", "status", "createdAt"] }
-  },
-  "admin": {
-    "pages": [{ "path": "/insights", "label": "Content Insights", "icon": "chart-line-up" }],
-    "widgets": [{ "id": "insight-summary", "title": "Content Insights", "size": "half" }]
-  }
+	"$schema": "../../plugin-cli/schemas/emdash-plugin.schema.json",
+	"slug": "sa-content-insights",
+	"publisher": "signal-alchemist.github.io", // TODO: publication is blocked until this handle resolves to the org's verified atproto DID.
+	"license": "MIT",
+	"author": { "name": "signal-alchemist" },
+	"security": { "url": "https://github.com/signal-alchemist/emdash/security/advisories/new" },
+	"description": "Editorial analytics snapshots, experiments, and improvement proposals for EmDash.",
+	"capabilities": ["content:read"],
+	"allowedHosts": [],
+	"storage": {
+		"snapshots": { "indexes": ["targetKey", "generatedAt", "snapshotId"] },
+		"experiments": { "indexes": ["targetKey", "status", "updatedAt"] },
+		"proposals": { "indexes": ["targetKey", "status", "createdAt"] },
+		"record_claims": { "indexes": ["kind", "recordId", "revision", "digest"] }
+	},
+	"admin": {
+		"pages": [{ "path": "/insights", "label": "Content Insights", "icon": "chart-line-up" }],
+		"widgets": [{ "id": "insight-summary", "title": "Content Insights", "size": "half" }]
+	}
 }

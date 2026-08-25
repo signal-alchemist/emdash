@@ -346,8 +346,12 @@ describe("content insight summary routes", () => {
 		const result = (await recent(
 			{},
 			{
+				content: { get: vi.fn(async () => ({ status: "published", locale: "en" })) },
 				storage: {
-					snapshots: { query: vi.fn(async () => ({ items: [{ data: { credential: "x" } }] })) },
+					snapshots: {
+						get: vi.fn(async () => null),
+						query: vi.fn(async () => ({ items: [{ data: { credential: "x" } }] })),
+					},
 					proposals: { query: vi.fn(async () => ({ items: [] })) },
 					experiments: { query: vi.fn(async () => ({ items: [] })) },
 				},
