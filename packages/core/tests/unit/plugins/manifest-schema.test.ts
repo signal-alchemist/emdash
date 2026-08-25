@@ -40,6 +40,22 @@ describe("pluginManifestSchema — route entries", () => {
 		expect(result.success).toBe(true);
 	});
 
+	it("accepts a positive integer route body limit", () => {
+		const result = pluginManifestSchema.safeParse({
+			...makeManifest({}),
+			routes: [{ name: "ingest", public: true, bodyLimit: 64_000 }],
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it.each([0, -1, 1.5])("rejects invalid route body limit %s", (bodyLimit) => {
+		const result = pluginManifestSchema.safeParse({
+			...makeManifest({}),
+			routes: [{ name: "ingest", bodyLimit }],
+		});
+		expect(result.success).toBe(false);
+	});
+
 	it("should accept a mix of strings and objects", () => {
 		const result = pluginManifestSchema.safeParse({
 			...makeManifest({}),
@@ -181,6 +197,22 @@ describe("normalizeManifestRoute", () => {
 
 	it("should pass through an object without public", () => {
 		expect(normalizeManifestRoute({ name: "internal" })).toEqual({ name: "internal" });
+	});
+
+	it("preserves route permission and body limit metadata", () => {
+		expect(
+			normalizeManifestRoute({
+				name: "ingest",
+				public: false,
+				permission: "content:read",
+				bodyLimit: 64_000,
+			}),
+		).toEqual({
+			name: "ingest",
+			public: false,
+			permission: "content:read",
+			bodyLimit: 64_000,
+		});
 	});
 });
 

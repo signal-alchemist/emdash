@@ -278,8 +278,7 @@ function summarizeRecords(
 		const diagnosis = stepPairs.map(([denominatorKey, numeratorKey]) => {
 			const denominator =
 				typeof funnel[denominatorKey] === "number" ? funnel[denominatorKey] : null;
-			const numerator =
-				typeof funnel[numeratorKey] === "number" ? funnel[numeratorKey] : null;
+			const numerator = typeof funnel[numeratorKey] === "number" ? funnel[numeratorKey] : null;
 			const rate =
 				record.sampleWarnings.includes("LOW_SAMPLE") ||
 				denominator === null ||
@@ -1347,6 +1346,7 @@ export default {
 			handler: async () => ({ ok: true, plugin: "sa-content-insights", phase: "foundation" }),
 		},
 		ingestSnapshot: {
+			bodyLimit: 64_000,
 			handler: (async (
 				routeCtx: { input: unknown; user?: unknown },
 				ctx: {
@@ -1371,8 +1371,9 @@ export default {
 			handler: handleSummary as never,
 		},
 		ingestProposal: {
+			bodyLimit: 64_000,
 			permission: "content:read",
-			handler: (async (
+			handler: async (
 				routeCtx: { input: unknown; user?: unknown },
 				ctx: {
 					content?: { get?: (collection: string, id: string) => Promise<unknown> };
@@ -1381,11 +1382,12 @@ export default {
 			) => {
 				if (!ctx.content?.get) throw new Error("CONTENT_READ_REQUIRED");
 				return persistRecord(routeCtx.input, "proposal", routeCtx.user, ctx as never);
-			}),
+			},
 		},
 		ingestExperiment: {
+			bodyLimit: 64_000,
 			permission: "content:read",
-			handler: (async (
+			handler: async (
 				routeCtx: { input: unknown; user?: unknown },
 				ctx: {
 					content?: { get?: (collection: string, id: string) => Promise<unknown> };
@@ -1394,7 +1396,7 @@ export default {
 			) => {
 				if (!ctx.content?.get) throw new Error("CONTENT_READ_REQUIRED");
 				return persistRecord(routeCtx.input, "experiment", routeCtx.user, ctx as never);
-			}),
+			},
 		},
 		recent: {
 			permission: "plugins:manage",

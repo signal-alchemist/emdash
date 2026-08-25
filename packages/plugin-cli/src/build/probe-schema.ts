@@ -91,6 +91,7 @@ const RouteEntryConfigSchema = z.looseObject({
 	public: z.boolean().optional(),
 	input: z.unknown().optional(),
 	permission: z.string().optional(),
+	bodyLimit: z.number().int().positive().optional(),
 });
 
 export const RouteEntrySchema = z.preprocess(normaliseEntry, RouteEntryConfigSchema);

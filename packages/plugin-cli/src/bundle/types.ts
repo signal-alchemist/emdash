@@ -77,6 +77,7 @@ export interface ResolvedPlugin {
 			handler?: unknown;
 			public?: boolean;
 			permission?: string;
+			bodyLimit?: number;
 		}
 	>;
 	mcp?: { tools: Record<string, ResolvedMcpTool> };

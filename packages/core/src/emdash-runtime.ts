@@ -3851,7 +3851,7 @@ export class EmDashRuntime {
 		// Check sandboxed (marketplace) plugins second
 		const sandboxedPlugin = this.findSandboxedPlugin(pluginId);
 		if (sandboxedPlugin) {
-			return this.handleSandboxedRoute(sandboxedPlugin, path, request, caller);
+			return this.handleSandboxedRoute(pluginId, sandboxedPlugin, path, request, caller);
 		}
 
 		return {
@@ -4319,6 +4319,7 @@ export class EmDashRuntime {
 	}
 
 	private async handleSandboxedRoute(
+		pluginId: string,
 		plugin: SandboxedPluginInstance,
 		path: string,
 		request: Request,
@@ -4332,7 +4333,22 @@ export class EmDashRuntime {
 		const routeName = path.replace(LEADING_SLASH_PATTERN, "");
 
 		// Body methods parse JSON; GET/HEAD/DELETE parse the query string (#2146).
-		const body = await parseRouteInput(request);
+		let body: unknown;
+		try {
+			body = await parseRouteInput(
+				request,
+				this.getPluginRouteMeta(pluginId, routeName)?.bodyLimit,
+			);
+		} catch (error) {
+			if (error instanceof BoundedBodyError) {
+				return {
+					success: false,
+					status: error.status,
+					error: { code: error.code, message: error.message },
+				};
+			}
+			throw error;
+		}
 
 		try {
 			const headers = sanitizeHeadersForSandbox(request.headers);

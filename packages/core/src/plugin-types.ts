@@ -217,6 +217,8 @@ export type RouteEntry =
 			 * always keep `private, no-store`.
 			 */
 			cacheControl?: string;
+			/** Maximum number of request-body bytes accepted before sandbox dispatch. */
+			bodyLimit?: number;
 			input?: unknown;
 			permission?: Permission;
 	  };

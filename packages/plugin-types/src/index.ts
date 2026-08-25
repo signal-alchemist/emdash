@@ -314,6 +314,8 @@ export interface ManifestRouteEntry {
 	public?: boolean;
 	/** RBAC permission required to invoke this route. */
 	permission?: string;
+	/** Maximum request-body size in bytes before the host rejects the route. */
+	bodyLimit?: number;
 	/**
 	 * Cache-Control value for successful GET responses. Only honored on
 	 * routes that are also `public: true`.

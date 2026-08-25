@@ -155,8 +155,8 @@ export function extractManifest(plugin: ResolvedPlugin): PluginManifest {
 
 	const routes: Array<ManifestRouteEntry | string> = Object.entries(plugin.routes).map(
 		([name, route]) =>
-			route.public !== undefined || route.permission !== undefined
-				? { name, public: route.public, permission: route.permission }
+			route.public !== undefined || route.permission !== undefined || route.bodyLimit !== undefined
+				? { name, public: route.public, permission: route.permission, bodyLimit: route.bodyLimit }
 				: name,
 	);
 	const tools: ManifestMcpTool[] = Object.entries(plugin.mcp?.tools ?? {}).map(([name, tool]) => {

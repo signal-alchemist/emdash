@@ -69,9 +69,7 @@ function isWritableContent(value: unknown): value is NonNullable<ApplyContext["c
 
 function isWritableMedia(value: unknown): value is NonNullable<ApplyContext["media"]> {
 	if (!value || typeof value !== "object") return false;
-	return ["get", "upload"].every(
-		(method) => typeof Reflect.get(value, method) === "function",
-	);
+	return ["get", "upload"].every((method) => typeof Reflect.get(value, method) === "function");
 }
 
 function hasMethods(value: unknown, methods: readonly string[]): value is object {
@@ -377,6 +375,7 @@ export default {
 		},
 		webhook: {
 			public: true,
+			bodyLimit: 64_000,
 			handler: async (routeCtx, ctx) => {
 				const webhook = readVerifiedWebhook(routeCtx.input);
 				const existing = await ctx.storage.sync_runs.query({
