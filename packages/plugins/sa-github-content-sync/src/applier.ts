@@ -13,7 +13,11 @@ const MAX_WARNINGS = 128;
 const MAX_WARNING_LENGTH = 200;
 const APPLY_ERROR = /^GITHUB_SYNC_APPLY_[A-Z0-9_]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const activeRuns = new Map<string, Promise<ContentSyncApplyResult>>();
+// In-flight work is only a request-level optimization.  Scope it to the
+// durable storage object so identical plans in two sandbox contexts never
+// share a result (or a rejected promise).  WeakMap avoids retaining a context
+// after its sandbox has been torn down.
+const activeRunsByStorage = new WeakMap<object, Map<string, Promise<ContentSyncApplyResult>>>();
 
 type SyncRunRecord = {
 	status: "running" | "succeeded" | "conflict" | "failed";
@@ -589,6 +593,11 @@ export async function applySyncPlan(
 ): Promise<ContentSyncApplyResult> {
 	const plan = await validateSyncPlan(input);
 	const key = `${plan.trace.deliveryId}:${plan.commitSha}:${plan.planDigest}`;
+	let activeRuns = activeRunsByStorage.get(ctx.storage);
+	if (!activeRuns) {
+		activeRuns = new Map();
+		activeRunsByStorage.set(ctx.storage, activeRuns);
+	}
 	const active = activeRuns.get(key);
 	if (active) return active;
 	const run = applyValidatedPlan(plan, ctx);

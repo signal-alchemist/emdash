@@ -222,6 +222,119 @@ describe("applySyncPlan", () => {
 		expect(content.delete).not.toHaveBeenCalled();
 	});
 
+	it("runs identical plans independently for separate storage contexts", async () => {
+		const plan = await makePlan();
+		const firstStore = storage();
+		const secondStore = storage();
+		let started = 0;
+		let release!: () => void;
+		const bothStarted = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const waitForBoth = async () => {
+			started += 1;
+			if (started === 2) release();
+			await bothStarted;
+		};
+		const makeContent = (rowId: string) => ({
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => ({ id: rowId, data: {}, revision: `${rowId}-published` })),
+			create: vi.fn(async () => {
+				await waitForBoth();
+				return { id: rowId, data: {}, revision: `${rowId}-created` };
+			}),
+			update: vi.fn(),
+			publish: vi.fn(async () => ({ id: rowId, data: {}, revision: `${rowId}-published` })),
+			unpublish: vi.fn(),
+		});
+		const firstContent = makeContent("first-row");
+		const secondContent = makeContent("second-row");
+		const first = applySyncPlan(plan, { storage: firstStore, content: firstContent } as never);
+		const second = applySyncPlan(plan, { storage: secondStore, content: secondContent } as never);
+		let timeoutId!: ReturnType<typeof setTimeout>;
+		const timeout = new Promise<never>((_, reject) => {
+			timeoutId = setTimeout(() => reject(new Error("contexts were incorrectly coalesced")), 1_000);
+		});
+		const [firstResult, secondResult] = await Promise.race([Promise.all([first, second]), timeout]);
+		clearTimeout(timeoutId);
+		expect(started).toBe(2);
+		expect(firstContent.create).toHaveBeenCalledTimes(1);
+		expect(secondContent.create).toHaveBeenCalledTimes(1);
+		expect(firstResult.results[0]?.contentId).toBe("content-launch");
+		expect(secondResult.results[0]?.contentId).toBe("content-launch");
+		expect(firstStore.records.size).toBe(1);
+		expect(secondStore.records.size).toBe(1);
+		expect(firstStore.mappings.values().next().value).toMatchObject({ emdashId: "first-row" });
+		expect(secondStore.mappings.values().next().value).toMatchObject({ emdashId: "second-row" });
+	});
+
+	it("does not leak a rejected run between storage contexts, allowing a retry", async () => {
+		const plan = await makePlan();
+		const failedStore = storage();
+		const successfulStore = storage();
+		const failedContent = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => ({ id: "failed-row", data: {}, revision: "rev" })),
+			create: vi.fn(async () => {
+				throw new Error("context-local failure");
+			}),
+			update: vi.fn(),
+			publish: vi.fn(),
+			unpublish: vi.fn(),
+		};
+		const successfulContent = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => ({ id: "successful-row", data: {}, revision: "rev-published" })),
+			create: vi.fn(async () => ({ id: "successful-row", data: {}, revision: "rev-created" })),
+			update: vi.fn(),
+			publish: vi.fn(async () => ({ id: "successful-row", data: {}, revision: "rev-published" })),
+			unpublish: vi.fn(),
+		};
+		const failed = await applySyncPlan(plan, {
+			storage: failedStore,
+			content: failedContent,
+		} as never);
+		const successful = await applySyncPlan(plan, {
+			storage: successfulStore,
+			content: successfulContent,
+		} as never);
+		expect(failed.status).toBe("failed");
+		expect(successful.status).toBe("succeeded");
+		expect(successfulContent.create).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps different plans independent within one storage context", async () => {
+		const firstPlan = await makePlan();
+		const secondPlan = await buildSyncPlan({ ...input, deliveryId: "delivery-10" }, planFetcher);
+		secondPlan.commands[0]!.source.path = "content/other.md";
+		secondPlan.commands[0]!.contentId = "content-other";
+		secondPlan.commands[0]!.fields.contentId = "content-other";
+		await redigest(secondPlan);
+		const store = storage();
+		const content = {
+			list: vi.fn(async () => ({ items: [] })),
+			get: vi.fn(async () => ({ id: "row", data: {}, revision: "rev-published" })),
+			create: vi
+				.fn()
+				.mockResolvedValueOnce({ id: "first-row", data: {}, revision: "first-rev" })
+				.mockResolvedValueOnce({ id: "second-row", data: {}, revision: "second-rev" }),
+			update: vi.fn(),
+			publish: vi
+				.fn()
+				.mockResolvedValueOnce({ id: "first-row", data: {}, revision: "first-published" })
+				.mockResolvedValueOnce({ id: "second-row", data: {}, revision: "second-published" }),
+			unpublish: vi.fn(),
+		};
+		const [first, second] = await Promise.all([
+			applySyncPlan(firstPlan, { storage: store, content } as never),
+			applySyncPlan(secondPlan, { storage: store, content } as never),
+		]);
+		expect(first.status).toBe("succeeded");
+		expect(second.status).toBe("succeeded");
+		expect(content.create).toHaveBeenCalledTimes(2);
+		expect(store.records.size).toBe(2);
+	});
+
 	it("uses the canonical mapping revision instead of scanning the first 100 rows", async () => {
 		const plan = await makePlan();
 		plan.commands[0]!.expectedRevision = "attacker-revision";
