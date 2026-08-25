@@ -882,12 +882,25 @@ export class ContentRepository {
 		}
 		updates.version = sql`version + 1`;
 
-		await this.db
+		let updateQuery = this.db
 			.updateTable(tableName as keyof Database)
 			.set(updates)
 			.where("id", "=", id)
-			.where("deleted_at" as never, "is", null)
-			.execute();
+			.where("deleted_at" as never, "is", null);
+		if (input.expected) {
+			updateQuery = updateQuery
+				.where(sql<boolean>`${sql.ref("version")} = ${input.expected.version}`)
+				.where(
+					sql<boolean>`${nullableColumnMatch("live_revision_id", input.expected.liveRevisionId)}`,
+				)
+				.where(
+					sql<boolean>`${nullableColumnMatch("draft_revision_id", input.expected.draftRevisionId)}`,
+				);
+		}
+		const updateResult = await updateQuery.execute();
+		if (input.expected && Number(updateResult[0]?.numUpdatedRows ?? 0) === 0) {
+			throw new ContentMutationConflictError();
+		}
 
 		if (hasColumnWrites) invalidateCollectionCache(type);
 
@@ -937,6 +950,27 @@ export class ContentRepository {
 
 		const revisionRepo = new RevisionRepository(this.db);
 		let existing = await this.findById(type, id);
+		if (
+			input.expected &&
+			existing &&
+			(existing.version !== input.expected.version ||
+				existing.liveRevisionId !== input.expected.liveRevisionId ||
+				existing.draftRevisionId !== input.expected.draftRevisionId)
+		) {
+			throw new ContentMutationConflictError();
+		}
+
+		// A newly-created draft has no revision to promote later. Persist an
+		// accepted plugin update on the content row so reads and a later publish
+		// observe the same data instead of a detached revision.
+		if (
+			existing &&
+			!existing.liveRevisionId &&
+			!existing.draftRevisionId &&
+			stagedSlug === undefined
+		) {
+			return this.update(type, id, { ...input, data });
+		}
 
 		for (let attempt = 0; existing && attempt < MAX_DRAFT_STAGE_ATTEMPTS; attempt++) {
 			let baseData = existing.data;
@@ -956,7 +990,13 @@ export class ContentRepository {
 
 			let staged: boolean;
 			try {
-				staged = await this.replaceDraftRevisionForUpdate(type, id, revision.id, existing, input);
+				staged = await this.replaceDraftRevisionForUpdate(
+					type,
+					id,
+					revision.id,
+					input.expected ?? existing,
+					input,
+				);
 			} catch (error) {
 				await this.deleteUnstagedRevision(revisionRepo, type, id, revision.id);
 				throw error;
@@ -973,6 +1013,7 @@ export class ContentRepository {
 			}
 
 			await this.deleteUnstagedRevision(revisionRepo, type, id, revision.id);
+			if (input.expected) throw new ContentMutationConflictError();
 			existing = await this.findById(type, id);
 		}
 
@@ -997,7 +1038,7 @@ export class ContentRepository {
 		type: string,
 		id: string,
 		revisionId: string,
-		expected: ContentItem,
+		expected: Pick<ContentItem, "version" | "liveRevisionId" | "draftRevisionId">,
 		input: UpdateContentInput,
 	): Promise<boolean> {
 		const tableName = getTableName(type);
@@ -1776,6 +1817,7 @@ export class ContentRepository {
 		expectedScheduledAt?: string,
 		promoteRevision = true,
 		requireSlug = true,
+		expected?: Pick<ContentItem, "version" | "liveRevisionId" | "draftRevisionId">,
 	): Promise<ContentItem> {
 		const tableName = getTableName(type);
 		const now = new Date().toISOString();
@@ -1784,6 +1826,15 @@ export class ContentRepository {
 		if (!existing) {
 			throw new EmDashValidationError("Content item not found");
 		}
+		if (
+			expected &&
+			(existing.version !== expected.version ||
+				existing.liveRevisionId !== expected.liveRevisionId ||
+				existing.draftRevisionId !== expected.draftRevisionId)
+		) {
+			throw new ContentMutationConflictError();
+		}
+		const fence = expected ?? existing;
 		if (
 			requireDue &&
 			expectedScheduledAt !== undefined &&
@@ -1827,10 +1878,10 @@ export class ContentRepository {
 							version = version + 1
 						WHERE id = ${id}
 						AND deleted_at IS NULL
-						AND version = ${existing.version}
+						AND version = ${fence.version}
 						AND status = ${existing.status}
-						AND ${nullableColumnMatch("live_revision_id", existing.liveRevisionId)}
-						AND ${nullableColumnMatch("draft_revision_id", existing.draftRevisionId)}
+						AND ${nullableColumnMatch("live_revision_id", fence.liveRevisionId)}
+						AND ${nullableColumnMatch("draft_revision_id", fence.draftRevisionId)}
 						AND ${nullableColumnMatch("scheduled_at", existing.scheduledAt)}
 						${duePredicate}
 					`.execute(this.db);
@@ -1952,10 +2003,10 @@ export class ContentRepository {
 					SET ${sql.join(assignments, sql`, `)}
 					WHERE id = ${id}
 					AND deleted_at IS NULL
-					AND version = ${existing.version}
+					AND version = ${fence.version}
 					AND status = ${existing.status}
-					AND ${nullableColumnMatch("live_revision_id", existing.liveRevisionId)}
-					AND ${nullableColumnMatch("draft_revision_id", existing.draftRevisionId)}
+					AND ${nullableColumnMatch("live_revision_id", fence.liveRevisionId)}
+					AND ${nullableColumnMatch("draft_revision_id", fence.draftRevisionId)}
 					AND ${nullableColumnMatch("scheduled_at", existing.scheduledAt)}
 					${duePredicate}
 					AND EXISTS (
@@ -2030,7 +2081,11 @@ export class ContentRepository {
 	 * Removes live pointer but preserves draft. If no draft exists,
 	 * creates one from the live version so the content isn't lost.
 	 */
-	async unpublish(type: string, id: string): Promise<ContentItem> {
+	async unpublish(
+		type: string,
+		id: string,
+		expected?: Pick<ContentItem, "version" | "liveRevisionId" | "draftRevisionId">,
+	): Promise<ContentItem> {
 		const tableName = getTableName(type);
 		const now = new Date().toISOString();
 
@@ -2038,44 +2093,70 @@ export class ContentRepository {
 		if (!existing) {
 			throw new EmDashValidationError("Content item not found");
 		}
+		if (
+			expected &&
+			(existing.version !== expected.version ||
+				existing.liveRevisionId !== expected.liveRevisionId ||
+				existing.draftRevisionId !== expected.draftRevisionId)
+		) {
+			throw new ContentMutationConflictError();
+		}
+		// Unpublishing an already-draft item is idempotent. Do not advance its
+		// optimistic-concurrency version or create a phantom revision.
+		if (existing.status === "draft") return existing;
+		const fence = expected ?? existing;
+		const revisionRepo = new RevisionRepository(this.db);
+		let provisionalRevisionId: string | undefined;
+		let nextDraftRevisionId = existing.draftRevisionId;
 
-		// If no draft exists, create one from the live version
-		if (!existing.draftRevisionId && existing.liveRevisionId) {
-			const revisionRepo = new RevisionRepository(this.db);
-			const liveRevision = await revisionRepo.findById(existing.liveRevisionId);
-			if (liveRevision) {
-				const draft = await revisionRepo.create({
-					collection: type,
-					entryId: id,
-					data: liveRevision.data,
-				});
-
-				await sql`
-					UPDATE ${sql.ref(tableName)}
-					SET draft_revision_id = ${draft.id}
-					WHERE id = ${id}
-				`.execute(this.db);
+		try {
+			// Prepare a draft from the live version without changing the content row.
+			// The final fenced UPDATE below installs it atomically with unpublish.
+			if (!nextDraftRevisionId && existing.liveRevisionId) {
+				const liveRevision = await revisionRepo.findById(existing.liveRevisionId);
+				if (liveRevision) {
+					const draft = await revisionRepo.create({
+						collection: type,
+						entryId: id,
+						data: liveRevision.data,
+					});
+					nextDraftRevisionId = draft.id;
+					provisionalRevisionId = draft.id;
+				}
 			}
+
+			const result = await sql`
+				UPDATE ${sql.ref(tableName)}
+				SET live_revision_id = NULL,
+					draft_revision_id = ${nextDraftRevisionId},
+					status = 'draft',
+					published_at = NULL,
+					updated_at = ${now},
+					version = version + 1
+				WHERE id = ${id}
+				AND deleted_at IS NULL
+				AND version = ${fence.version}
+				AND ${nullableColumnMatch("live_revision_id", fence.liveRevisionId)}
+				AND ${nullableColumnMatch("draft_revision_id", fence.draftRevisionId)}
+			`.execute(this.db);
+			if ((result.numAffectedRows ?? 0n) === 0n) {
+				throw new ContentMutationConflictError();
+			}
+
+			invalidateCollectionCache(type);
+			const updated = await this.findById(type, id);
+			if (!updated) throw new Error("Content not found");
+			return updated;
+		} catch (error) {
+			if (provisionalRevisionId) {
+				try {
+					await revisionRepo.deleteIfUnreferenced(type, id, provisionalRevisionId);
+				} catch {
+					// Preserve the original mutation error; cleanup is best effort.
+				}
+			}
+			throw error;
 		}
-
-		await sql`
-			UPDATE ${sql.ref(tableName)}
-			SET live_revision_id = NULL,
-				status = 'draft',
-				published_at = NULL,
-				updated_at = ${now}
-			WHERE id = ${id}
-			AND deleted_at IS NULL
-		`.execute(this.db);
-
-		invalidateCollectionCache(type);
-
-		const updated = await this.findById(type, id);
-		if (!updated) {
-			throw new Error("Content not found");
-		}
-
-		return updated;
 	}
 
 	/**

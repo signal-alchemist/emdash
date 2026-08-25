@@ -1,0 +1,25 @@
+{
+  "name": "@signal-alchemist/emdash-plugin-github-content-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sandbox": "./src/sandbox-entry.ts"
+  },
+  "peerDependencies": {
+    "emdash": "workspace:>=0.15.0"
+  },
+  "dependencies": {
+    "@signal-alchemist/marketing-automation-contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "scripts": {
+    "typecheck": "tsgo --noEmit",
+    "test": "vitest run"
+  }
+}

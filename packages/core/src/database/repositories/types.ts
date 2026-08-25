@@ -36,6 +36,8 @@ export interface UpdateContentInput {
 	scheduledAt?: string | null;
 	authorId?: string | null;
 	primaryBylineId?: string | null;
+	/** Internal row fence used by revision-aware plugin writes. */
+	expected?: Pick<ContentItem, "version" | "liveRevisionId" | "draftRevisionId">;
 }
 
 /** SEO fields for content items */
@@ -341,7 +343,9 @@ export class ScheduledNotDueError extends Error {
 }
 
 export class ContentMutationConflictError extends Error {
-	constructor(message = "Content changed while the operation was in progress") {
+	constructor(
+		message = "Content mutation conflict: content changed while the operation was in progress",
+	) {
 		super(message);
 		this.name = "ContentMutationConflictError";
 	}

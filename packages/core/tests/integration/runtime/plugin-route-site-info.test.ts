@@ -9,6 +9,7 @@ import { setupTestDatabase, teardownTestDatabase } from "../../utils/test-db.js"
 
 async function buildRuntime() {
 	const db = await setupTestDatabase();
+	let boundedInvocations = 0;
 	const plugin = definePlugin({
 		id: "site-aware-route",
 		version: "1.0.0",
@@ -18,6 +19,14 @@ async function buildRuntime() {
 					site: ctx.site,
 					url: ctx.url("/checkout/success"),
 				}),
+			},
+			bounded: {
+				public: true,
+				bodyLimit: 2,
+				handler: async () => {
+					boundedInvocations++;
+					return "unexpected";
+				},
 			},
 		},
 	});
@@ -64,7 +73,7 @@ async function buildRuntime() {
 		runtimeDeps,
 		pipelineRef,
 	});
-	return { db, runtime };
+	return { db, runtime, getBoundedInvocations: () => boundedInvocations };
 }
 
 describe("EmDashRuntime.handlePluginApiRoute site context", () => {
@@ -90,6 +99,28 @@ describe("EmDashRuntime.handlePluginApiRoute site context", () => {
 					url: "https://example.com/checkout/success",
 				},
 			});
+		} finally {
+			await teardownTestDatabase(db);
+		}
+	});
+	it("maps bounded body errors before invoking the production plugin handler", async () => {
+		const { db, runtime, getBoundedInvocations } = await buildRuntime();
+		try {
+			const result = await runtime.handlePluginApiRoute(
+				"site-aware-route",
+				"POST",
+				"/bounded",
+				new Request("https://admin.example.com/_emdash/api/plugin/site-aware-route/bounded", {
+					method: "POST",
+					body: '{"ok":true}',
+				}),
+			);
+			expect(result).toMatchObject({
+				success: false,
+				status: 413,
+				error: { code: "PLUGIN_BODY_INVALID" },
+			});
+			expect(getBoundedInvocations()).toBe(0);
 		} finally {
 			await teardownTestDatabase(db);
 		}

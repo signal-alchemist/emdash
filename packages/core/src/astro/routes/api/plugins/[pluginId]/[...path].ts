@@ -30,6 +30,25 @@ const handleRequest: APIRoute = async ({ params, request, locals }) => {
 	if (!emdash?.handlePluginApiRoute) {
 		return apiError("NOT_CONFIGURED", "EmDash not configured", 500);
 	}
+	if (pluginId === "sa-github-content-sync" && path === "webhook") {
+		if (!emdash.handleGithubContentSyncWebhook)
+			return apiError("NOT_CONFIGURED", "EmDash not configured", 500);
+		try {
+			const result = await emdash.handleGithubContentSyncWebhook(request);
+			if (!result.success)
+				return apiError(
+					result.error?.code ?? "PLUGIN_ERROR",
+					result.error?.message ?? "Plugin route error",
+					result.status ?? 400,
+				);
+			return apiSuccess(result.data);
+		} catch (error) {
+			const code =
+				error instanceof Error && "code" in error ? String(error.code) : "GITHUB_SYNC_ERROR";
+			const status = error instanceof Error && "status" in error ? Number(error.status) : 400;
+			return apiError(code, code, status);
+		}
+	}
 
 	// Resolve route metadata to decide auth before dispatch
 	const routeMeta = emdash.getPluginRouteMeta(pluginId, `/${path}`);

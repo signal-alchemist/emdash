@@ -9,9 +9,17 @@
 
 import type { D1Database } from "@cloudflare/workers-types";
 import { WorkerEntrypoint } from "cloudflare:workers";
-import type { ContentCreateOptions, Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
+import type {
+	ContentCreateOptions,
+	ContentPublishOptions,
+	ContentUpdateOptions,
+	Database,
+	I18nConfig,
+	SandboxEmailSendCallback,
+} from "emdash";
 import {
-	ContentRepository,
+	createContentAccess,
+	createContentAccessWithWrite,
 	createSandboxRouteError,
 	getSandboxRouteErrorDetails,
 	ulid,
@@ -22,6 +30,15 @@ import { Kysely } from "kysely";
 import { D1Dialect } from "kysely-d1";
 
 import { sandboxHttpFetch } from "./bridge-http.js";
+import { mediaSha256 } from "./media-sha256.js";
+import {
+	assertStorageCollectionDeclared,
+	storageCreate as createStorageRow,
+} from "./storage-create.js";
+
+type PluginContentItem = NonNullable<
+	Awaited<ReturnType<ReturnType<typeof createContentAccess>["get"]>>
+>;
 
 /** Regex to validate collection names (prevent SQL injection) */
 const COLLECTION_NAME_REGEX = /^[a-z][a-z0-9_]*$/;
@@ -29,6 +46,31 @@ const MISSING_MEDIA_USAGE_ACTIVATION_TABLE_REGEX = /no such table.*_emdash_media
 
 /** Regex to validate file extensions (simple alphanumeric, 1-10 chars) */
 const FILE_EXT_REGEX = /^\.[a-z0-9]{1,10}$/i;
+const SHA256_REGEX = /^[a-f0-9]{64}$/i;
+const hasControlCharacter = (value: string) => {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+};
+function isMediaUploadOptions(
+	value: unknown,
+): value is { sha256?: string; alt?: string; deduplicate?: boolean } {
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		Object.getPrototypeOf(value) !== Object.prototype
+	)
+		return false;
+	return Object.entries(value).every(
+		([key, option]) =>
+			(option === undefined && (key === "sha256" || key === "alt" || key === "deduplicate")) ||
+			(key === "sha256" && typeof option === "string") ||
+			(key === "alt" && typeof option === "string") ||
+			(key === "deduplicate" && typeof option === "boolean"),
+	);
+}
 
 /** System columns that plugins cannot directly write to */
 const SYSTEM_COLUMNS = new Set([
@@ -147,6 +189,47 @@ function columnStringArray(value: unknown): string[] {
 /** Type guard for plain JSON objects. */
 function isJsonObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function contentMutationOptions(value: unknown, kind: "update"): ContentUpdateOptions;
+function contentMutationOptions(value: unknown, kind: "publish"): ContentPublishOptions;
+function contentMutationOptions(value: unknown, kind: "unpublish"): { expectedRevision?: string };
+function contentMutationOptions(
+	value: unknown,
+	kind: "update" | "publish" | "unpublish",
+): ContentUpdateOptions | ContentPublishOptions | { expectedRevision?: string } {
+	if (value === undefined) return {};
+	if (!isJsonObject(value) || Object.getPrototypeOf(value) !== Object.prototype) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	const allowed =
+		kind === "update"
+			? new Set(["expectedRevision", "slug"])
+			: kind === "publish"
+				? new Set(["expectedRevision", "publishedAt"])
+				: new Set(["expectedRevision"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (value.expectedRevision !== undefined && typeof value.expectedRevision !== "string") {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (
+		kind === "update" &&
+		value.slug !== undefined &&
+		value.slug !== null &&
+		typeof value.slug !== "string"
+	) {
+		throw new Error("Invalid content update options");
+	}
+	if (
+		kind === "publish" &&
+		value.publishedAt !== undefined &&
+		typeof value.publishedAt !== "string"
+	) {
+		throw new Error("Invalid content publish options");
+	}
+	return value;
 }
 
 /** Parse a JSON string column into an object (`null` on anything else). */
@@ -325,9 +408,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 
 	async storageGet(collection: string, id: string): Promise<unknown> {
 		const { pluginId, storageCollections } = this.ctx.props;
-		if (!storageCollections.includes(collection)) {
-			throw new Error(`Storage collection not declared: ${collection}`);
-		}
+		assertStorageCollectionDeclared(collection, storageCollections);
 		const result = await this.env.DB.prepare(
 			"SELECT data FROM _plugin_storage WHERE plugin_id = ? AND collection = ? AND id = ?",
 		)
@@ -335,6 +416,12 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			.first<{ data: string }>();
 		if (!result) return null;
 		return JSON.parse(result.data);
+	}
+
+	async storageCreate(collection: string, id: string, data: unknown): Promise<boolean> {
+		const { pluginId, storageCollections } = this.ctx.props;
+		assertStorageCollectionDeclared(collection, storageCollections);
+		return createStorageRow(this.env.DB, pluginId, collection, id, data);
 	}
 
 	async storagePut(collection: string, id: string, data: unknown): Promise<void> {
@@ -470,17 +557,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 	// Content Operations - capability-gated
 	// =========================================================================
 
-	async contentGet(
-		collection: string,
-		id: string,
-	): Promise<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	} | null> {
+	async contentGet(collection: string, id: string): Promise<PluginContentItem | null> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("content:read")) {
 			throw new Error("Missing capability: content:read");
@@ -489,19 +566,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (!COLLECTION_NAME_REGEX.test(collection)) {
 			throw new Error(`Invalid collection name: ${collection}`);
 		}
-		try {
-			// Content tables use ec_${collection} naming (no leading underscore)
-			// Exclude soft-deleted items
-			const result = await this.env.DB.prepare(
-				`SELECT * FROM ec_${collection} WHERE id = ? AND deleted_at IS NULL`,
-			)
-				.bind(id)
-				.first();
-			if (!result) return null;
-			return rowToContentItem(collection, result);
-		} catch {
-			return null;
-		}
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccess(db).get(collection, id);
 	}
 
 	async contentList(
@@ -645,14 +711,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		collection: string,
 		id: string,
 		data: Record<string, unknown>,
-	): Promise<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	}> {
+		options?: unknown,
+	): Promise<PluginContentItem> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("content:write")) {
 			throw new Error("Missing capability: content:write");
@@ -660,23 +720,51 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (!COLLECTION_NAME_REGEX.test(collection)) {
 			throw new Error(`Invalid collection name: ${collection}`);
 		}
-		await this.assertMediaUsageActivationWriteAllowed();
+		const parsed = contentMutationOptions(options, "update");
 		const db = new Kysely<Database>({
 			dialect: new D1Dialect({ database: this.env.DB }),
 		});
-		const updated = await new ContentRepository(db).updateDraftAware(collection, id, {
-			data,
-			status: typeof data.status === "string" ? data.status : undefined,
-			slug: data.slug === undefined ? undefined : typeof data.slug === "string" ? data.slug : null,
-		});
-		return {
-			id: updated.id,
-			type: updated.type,
-			data: updated.data,
-			createdAt: updated.createdAt,
-			updatedAt: updated.updatedAt,
-			locale: updated.locale ?? "en",
-		};
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).update(collection, id, data, parsed);
+	}
+
+	async contentPublish(
+		collection: string,
+		id: string,
+		options?: unknown,
+	): Promise<PluginContentItem> {
+		const { capabilities } = this.ctx.props;
+		if (!capabilities.includes("content:write")) {
+			throw new Error("Missing capability: content:write");
+		}
+		if (!COLLECTION_NAME_REGEX.test(collection)) {
+			throw new Error(`Invalid collection name: ${collection}`);
+		}
+		const parsed = contentMutationOptions(options, "publish");
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).publish(collection, id, parsed);
+	}
+
+	async contentUnpublish(
+		collection: string,
+		id: string,
+		options?: unknown,
+	): Promise<PluginContentItem> {
+		const { capabilities } = this.ctx.props;
+		if (!capabilities.includes("content:write")) {
+			throw new Error("Missing capability: content:write");
+		}
+		if (!COLLECTION_NAME_REGEX.test(collection)) {
+			throw new Error(`Invalid collection name: ${collection}`);
+		}
+		const parsed = contentMutationOptions(options, "unpublish");
+		const db = new Kysely<Database>({ dialect: new D1Dialect({ database: this.env.DB }) });
+		return createContentAccessWithWrite(db, () =>
+			this.assertMediaUsageActivationWriteAllowed(),
+		).unpublish(collection, id, parsed);
 	}
 
 	async contentDelete(collection: string, id: string): Promise<boolean> {
@@ -824,6 +912,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		size: number | null;
 		url: string;
 		createdAt: string;
+		sha256: string | null;
+		alt: string | null;
 	} | null> {
 		const { capabilities } = this.ctx.props;
 		if (!capabilities.includes("media:read")) {
@@ -836,6 +926,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: number | null;
 			storage_key: string;
 			created_at: string;
+			sha256: string | null;
+			alt: string | null;
 		}>();
 		if (!result) return null;
 		return {
@@ -845,6 +937,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: result.size,
 			url: `/_emdash/api/media/file/${result.storage_key}`,
 			createdAt: result.created_at,
+			sha256: result.sha256,
+			alt: (result as { alt?: string | null }).alt ?? null,
 		};
 	}
 
@@ -856,6 +950,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: number | null;
 			url: string;
 			createdAt: string;
+			sha256: string | null;
+			alt: string | null;
 		}>;
 		cursor?: string;
 		hasMore: boolean;
@@ -891,6 +987,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 				size: number | null;
 				storage_key: string;
 				created_at: string;
+				sha256: string | null;
+				alt: string | null;
 			}>();
 
 		const rows = results.results ?? [];
@@ -902,6 +1000,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			size: row.size,
 			url: `/_emdash/api/media/file/${row.storage_key}`,
 			createdAt: row.created_at,
+			sha256: row.sha256,
+			alt: row.alt ?? null,
 		}));
 		const hasMore = rows.length > limit;
 
@@ -926,8 +1026,11 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		filename: string,
 		contentType: string,
 		bytes: ArrayBuffer,
+		options: { sha256?: string; alt?: string; deduplicate?: boolean } = {},
 	): Promise<{ mediaId: string; storageKey: string; url: string }> {
 		const { capabilities } = this.ctx.props;
+		if (!isMediaUploadOptions(options))
+			throw new Error("media/upload: options must be an exact object");
 		if (!capabilities.includes("media:write")) {
 			throw new Error("Missing capability: media:write");
 		}
@@ -935,6 +1038,7 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (!this.env.MEDIA) {
 			throw new Error("Media storage (R2) not configured. Add MEDIA binding to wrangler config.");
 		}
+		const mediaId = ulid();
 
 		// Validate MIME type — only allow image, video, audio, and PDF
 		const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/", "application/pdf"];
@@ -944,7 +1048,6 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			);
 		}
 
-		const mediaId = ulid();
 		// Derive extension from basename only, validate it's a simple extension
 		const basename = filename.includes("/")
 			? filename.slice(filename.lastIndexOf("/") + 1)
@@ -954,6 +1057,52 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		// Flat storage key matching core convention: ${ulid}${ext}
 		const storageKey = `${mediaId}${ext}`;
 		const now = new Date().toISOString();
+		const sha256 = await mediaSha256(bytes);
+		if (options.sha256 !== undefined && !SHA256_REGEX.test(options.sha256)) {
+			throw new Error("sha256 must be a 64-character hexadecimal digest");
+		}
+		if (options.sha256 !== undefined && options.sha256.toLowerCase() !== sha256) {
+			throw new Error("sha256 does not match uploaded bytes");
+		}
+		if (
+			options.deduplicate &&
+			(!options.alt || options.alt.length > 255 || hasControlCharacter(options.alt))
+		) {
+			throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
+		}
+		const existing = options.deduplicate
+			? await this.env.DB.prepare(
+					"SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1",
+				)
+					.bind(sha256)
+					.first<{
+						id: string;
+						storage_key: string;
+						mime_type: string;
+						size: number | null;
+						width: number | null;
+						height: number | null;
+						alt: string | null;
+					}>()
+			: null;
+		const matches = (row: {
+			mime_type: string;
+			size: number | null;
+			width?: number | null;
+			height?: number | null;
+			alt?: string | null;
+		}) =>
+			row.mime_type === contentType &&
+			row.size === bytes.byteLength &&
+			(row.alt ?? null) === (options.alt ?? null);
+		if (existing) {
+			if (!matches(existing)) throw new Error("Media SHA-256 matches but metadata conflicts");
+			return {
+				mediaId: existing.id,
+				storageKey: existing.storage_key,
+				url: `/_emdash/api/media/file/${existing.storage_key}`,
+			};
+		}
 
 		// Write bytes to R2 first, then create DB record.
 		// If DB insert fails, clean up the R2 object to prevent orphans.
@@ -964,9 +1113,18 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		try {
 			// Create confirmed media record with ISO timestamp (matching core)
 			await this.env.DB.prepare(
-				"INSERT INTO media (id, filename, mime_type, size, storage_key, status, created_at) VALUES (?, ?, ?, ?, ?, 'ready', ?)",
+				"INSERT INTO media (id, filename, mime_type, size, storage_key, status, created_at, sha256, alt) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)",
 			)
-				.bind(mediaId, filename, contentType, bytes.byteLength, storageKey, now)
+				.bind(
+					mediaId,
+					filename,
+					contentType,
+					bytes.byteLength,
+					storageKey,
+					now,
+					sha256,
+					options.alt ?? null,
+				)
 				.run();
 		} catch (error) {
 			// Clean up R2 object on DB failure to prevent orphans
@@ -975,6 +1133,28 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			} catch {
 				// Best-effort cleanup — log and continue
 				console.warn(`[plugin-bridge] Failed to clean up orphaned R2 object: ${storageKey}`);
+			}
+			const winner = await this.env.DB.prepare(
+				"SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1",
+			)
+				.bind(sha256)
+				.first<{
+					id: string;
+					storage_key: string;
+					mime_type: string;
+					size: number | null;
+					width: number | null;
+					height: number | null;
+					alt: string | null;
+				}>();
+			if (winner) {
+				if (!matches(winner))
+					throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
+				return {
+					mediaId: winner.id,
+					storageKey: winner.storage_key,
+					url: `/_emdash/api/media/file/${winner.storage_key}`,
+				};
 			}
 			throw error;
 		}

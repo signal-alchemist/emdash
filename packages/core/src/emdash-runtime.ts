@@ -208,10 +208,15 @@ import {
 } from "./index.js";
 import { getDb } from "./loader.js";
 import { isRecord } from "./plugin-utils.js";
+import { BoundedBodyError } from "./plugins/bounded-body.js";
 import { CronExecutor, type InvokeCronHookFn } from "./plugins/cron.js";
 import { definePlugin } from "./plugins/define-plugin.js";
 import { DEV_CONSOLE_EMAIL_PLUGIN_ID, devConsoleEmailDeliver } from "./plugins/email-console.js";
 import { EmailPipeline } from "./plugins/email.js";
+import {
+	GithubContentSyncReplayGuard,
+	verifyGithubContentSyncWebhook,
+} from "./plugins/github-content-sync-webhook.js";
 import {
 	createHookPipeline,
 	resolveExclusiveHooks as resolveExclusiveHooksShared,
@@ -647,6 +652,7 @@ export class EmDashRuntime {
 	private cronScheduler: CronScheduler | null;
 	private enabledPlugins: Set<string>;
 	private pluginStates: Map<string, string>;
+	private readonly githubWebhookReplay = new GithubContentSyncReplayGuard();
 
 	/**
 	 * Isolate-lifetime guard so FTS indexes are verified at most once per
@@ -3822,7 +3828,22 @@ export class EmDashRuntime {
 			const routeKey = path.replace(LEADING_SLASH_PATTERN, "");
 
 			// Body methods parse JSON; GET/HEAD/DELETE parse the query string (#2146).
-			const body = await parseRouteInput(request);
+			let body: unknown;
+			try {
+				body = await parseRouteInput(
+					request,
+					routeRegistry.getRouteMeta(pluginId, routeKey)?.bodyLimit,
+				);
+			} catch (error) {
+				if (error instanceof BoundedBodyError) {
+					return {
+						success: false,
+						error: { code: error.code, message: error.message },
+						status: error.status,
+					};
+				}
+				throw error;
+			}
 
 			return routeRegistry.invoke(pluginId, routeKey, { request, body, user: caller });
 		}
@@ -3830,7 +3851,7 @@ export class EmDashRuntime {
 		// Check sandboxed (marketplace) plugins second
 		const sandboxedPlugin = this.findSandboxedPlugin(pluginId);
 		if (sandboxedPlugin) {
-			return this.handleSandboxedRoute(sandboxedPlugin, path, request, caller);
+			return this.handleSandboxedRoute(pluginId, sandboxedPlugin, path, request, caller);
 		}
 
 		return {
@@ -4298,6 +4319,7 @@ export class EmDashRuntime {
 	}
 
 	private async handleSandboxedRoute(
+		pluginId: string,
 		plugin: SandboxedPluginInstance,
 		path: string,
 		request: Request,
@@ -4311,7 +4333,22 @@ export class EmDashRuntime {
 		const routeName = path.replace(LEADING_SLASH_PATTERN, "");
 
 		// Body methods parse JSON; GET/HEAD/DELETE parse the query string (#2146).
-		const body = await parseRouteInput(request);
+		let body: unknown;
+		try {
+			body = await parseRouteInput(
+				request,
+				this.getPluginRouteMeta(pluginId, routeName)?.bodyLimit,
+			);
+		} catch (error) {
+			if (error instanceof BoundedBodyError) {
+				return {
+					success: false,
+					status: error.status,
+					error: { code: error.code, message: error.message },
+				};
+			}
+			throw error;
+		}
 
 		try {
 			const headers = sanitizeHeadersForSandbox(request.headers);
@@ -4345,6 +4382,32 @@ export class EmDashRuntime {
 				},
 			};
 		}
+	}
+
+	async handleGithubContentSyncWebhook(request: Request) {
+		const policy = this.config.githubContentSync;
+		const secretName = policy?.webhookSecretEnv;
+		const secret =
+			secretName && typeof process !== "undefined" && process.env
+				? process.env[secretName]
+				: undefined;
+		const dispatch = await verifyGithubContentSyncWebhook(request, policy, secret);
+		let result: Awaited<ReturnType<EmDashRuntime["handlePluginApiRoute"]>> | undefined;
+		const accepted = await this.githubWebhookReplay.run(dispatch.deliveryId, async () => {
+			result = await this.handlePluginApiRoute(
+				"sa-github-content-sync",
+				"POST",
+				"/webhook",
+				new Request(request.url, { method: "POST", body: JSON.stringify(dispatch) }),
+			);
+			if (!result || result.success !== true) throw new Error("GITHUB_SYNC_DISPATCH_FAILED");
+		});
+		if (!accepted)
+			return {
+				success: true,
+				data: { accepted: false, reason: "duplicate-delivery", deliveryId: dispatch.deliveryId },
+			};
+		return result;
 	}
 
 	// =========================================================================

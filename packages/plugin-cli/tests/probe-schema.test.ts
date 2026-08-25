@@ -79,6 +79,23 @@ describe("parseProbedDefault", () => {
 			expect(result.routes?.ping).toEqual({ handler, public: true });
 		});
 
+		it("preserves a positive route body limit", () => {
+			const handler = (): void => {};
+			const result = parseProbedDefault(PLUGIN_ENTRY, {
+				routes: { ingest: { handler, bodyLimit: 64_000 } },
+			});
+			expect(result.routes?.ingest).toMatchObject({ handler, bodyLimit: 64_000 });
+		});
+
+		it.each([0, -1, 1.5])("rejects invalid route body limit %s", (bodyLimit) => {
+			const handler = (): void => {};
+			const error = expectFailure({
+				routes: { ingest: { handler, bodyLimit } },
+			});
+			expect(error.code).toBe("INVALID_PLUGIN_FORMAT");
+			expect(error.message).toContain('route "ingest" has invalid bodyLimit');
+		});
+
 		it("passes through unknown extra keys on the default export", () => {
 			const handler = (): void => {};
 			const result = parseProbedDefault(PLUGIN_ENTRY, {

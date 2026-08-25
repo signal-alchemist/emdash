@@ -15,15 +15,28 @@
  */
 
 import {
-	ContentRepository,
+	createContentAccess,
+	createContentAccessWithWrite,
 	createHttpAccess,
 	createSandboxRouteErrorEnvelope,
 	createUnrestrictedHttpAccess,
 	PluginStorageRepository,
 	resolveContentCreateLocale,
 } from "emdash";
-import type { Database, I18nConfig, SandboxEmailSendCallback } from "emdash";
+import type {
+	ContentPublishOptions,
+	ContentUpdateOptions,
+	Database,
+	I18nConfig,
+	SandboxEmailSendCallback,
+} from "emdash";
 import type { Kysely } from "kysely";
+
+import { mediaSha256 } from "./media-sha256.js";
+
+type PluginContentItem = NonNullable<
+	Awaited<ReturnType<ReturnType<typeof createContentAccess>["get"]>>
+>;
 
 /**
  * Schema view of a content table (ec_${collection}) for kysely. The standard
@@ -115,6 +128,17 @@ export interface BridgeHandlerOptions {
 	storage?: BridgeStorage | null;
 }
 
+function isPluginRevisionConflict(
+	error: unknown,
+): error is { code: "CONFLICT"; status: 409; message: string } {
+	return (
+		isRecord(error) &&
+		error.code === "CONFLICT" &&
+		error.status === 409 &&
+		typeof error.message === "string"
+	);
+}
+
 /**
  * Create a bridge handler function scoped to a specific plugin.
  * Returns an async function that takes a Request and returns a Response.
@@ -142,6 +166,12 @@ export function createBridgeHandler(
 			const result = await dispatch(opts, method, body);
 			return Response.json({ result });
 		} catch (error) {
+			if (isPluginRevisionConflict(error)) {
+				return Response.json(
+					{ error: { code: error.code, message: error.message, status: error.status } },
+					{ status: error.status },
+				);
+			}
 			const sandboxRouteError = createSandboxRouteErrorEnvelope(error);
 			if (sandboxRouteError) {
 				return Response.json(
@@ -207,6 +237,25 @@ async function dispatch(
 				requireString(body, "collection"),
 				requireString(body, "id"),
 				requireRecord(body, "data"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "update"),
+			);
+		case "content/publish":
+			requireCapability(opts, "write:content");
+			await opts.beforeContentWrite?.();
+			return contentPublish(
+				db,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "publish"),
+			);
+		case "content/unpublish":
+			requireCapability(opts, "write:content");
+			await opts.beforeContentWrite?.();
+			return contentUnpublish(
+				db,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				parseContentMutationOptions(optionalRecord(body, "options"), "unpublish"),
 			);
 		case "content/delete":
 			requireCapability(opts, "write:content");
@@ -273,6 +322,7 @@ async function dispatch(
 				requireString(body, "contentType"),
 				requireMediaBytes(body, "bytes"),
 				optionalString(body, "encoding"),
+				requireMediaUploadOptions(body.options),
 				opts.storage,
 			);
 		case "media/delete":
@@ -309,6 +359,14 @@ async function dispatch(
 		case "storage/get":
 			validateStorageCollection(opts, requireString(body, "collection"));
 			return storageGet(opts, requireString(body, "collection"), requireString(body, "id"));
+		case "storage/create":
+			validateStorageCollection(opts, requireString(body, "collection"));
+			return storageCreate(
+				opts,
+				requireString(body, "collection"),
+				requireString(body, "id"),
+				body.data,
+			);
 		case "storage/put":
 			validateStorageCollection(opts, requireString(body, "collection"));
 			return storagePut(
@@ -468,6 +526,73 @@ function optionalRecord(
 	const value = body[key];
 	if (value === undefined) return undefined;
 	if (!isRecord(value)) throw new Error(`Parameter ${key} must be an object when provided`);
+	return value;
+}
+
+function requireMediaUploadOptions(value: unknown): {
+	sha256?: string;
+	alt?: string;
+	deduplicate?: boolean;
+} {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new Error("media/upload: options must be an object");
+	for (const key of Object.keys(value)) {
+		if (key !== "sha256" && key !== "alt" && key !== "deduplicate")
+			throw new Error(`media/upload: unknown option ${key}`);
+	}
+	if (value.sha256 !== undefined && typeof value.sha256 !== "string")
+		throw new Error("media/upload: sha256 must be a string");
+	if (value.alt !== undefined && typeof value.alt !== "string")
+		throw new Error("media/upload: alt must be a string");
+	if (value.deduplicate !== undefined && typeof value.deduplicate !== "boolean")
+		throw new Error("media/upload: deduplicate must be a boolean");
+	return { sha256: value.sha256, alt: value.alt, deduplicate: value.deduplicate };
+}
+
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "update",
+): ContentUpdateOptions;
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "publish",
+): ContentPublishOptions;
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "unpublish",
+): { expectedRevision?: string };
+function parseContentMutationOptions(
+	value: Record<string, unknown> | undefined,
+	kind: "update" | "publish" | "unpublish",
+): ContentUpdateOptions | ContentPublishOptions | { expectedRevision?: string } {
+	if (value === undefined) return {};
+	const allowed =
+		kind === "update"
+			? new Set(["expectedRevision", "slug"])
+			: kind === "publish"
+				? new Set(["expectedRevision", "publishedAt"])
+				: new Set(["expectedRevision"]);
+	if (Object.keys(value).some((key) => !allowed.has(key))) {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (value.expectedRevision !== undefined && typeof value.expectedRevision !== "string") {
+		throw new Error(`Invalid content ${kind} options`);
+	}
+	if (
+		kind === "update" &&
+		value.slug !== undefined &&
+		value.slug !== null &&
+		typeof value.slug !== "string"
+	) {
+		throw new Error("Invalid content update options");
+	}
+	if (
+		kind === "publish" &&
+		value.publishedAt !== undefined &&
+		typeof value.publishedAt !== "string"
+	) {
+		throw new Error("Invalid content publish options");
+	}
 	return value;
 }
 
@@ -701,28 +826,9 @@ async function contentGet(
 	db: Kysely<Database>,
 	collection: string,
 	id: string,
-): Promise<{
-	id: string;
-	type: string;
-	data: Record<string, unknown>;
-	createdAt: string;
-	updatedAt: string;
-	locale: string;
-} | null> {
+): Promise<PluginContentItem | null> {
 	validateCollectionName(collection);
-	const table = `ec_${collection}`;
-	try {
-		const row = await asContentDb(db)
-			.selectFrom(table)
-			.where("id", "=", id)
-			.where("deleted_at", "is", null)
-			.selectAll()
-			.executeTakeFirst();
-		if (!row) return null;
-		return rowToContentItem(collection, row);
-	} catch {
-		return null;
-	}
+	return createContentAccess(db).get(collection, id);
 }
 
 async function contentList(
@@ -840,28 +946,30 @@ async function contentUpdate(
 	collection: string,
 	id: string,
 	data: Record<string, unknown>,
-): Promise<{
-	id: string;
-	type: string;
-	data: Record<string, unknown>;
-	createdAt: string;
-	updatedAt: string;
-	locale: string;
-}> {
+	options: ContentUpdateOptions,
+): Promise<PluginContentItem> {
 	validateCollectionName(collection);
-	const updated = await new ContentRepository(db).updateDraftAware(collection, id, {
-		data,
-		status: typeof data.status === "string" ? data.status : undefined,
-		slug: data.slug === undefined ? undefined : typeof data.slug === "string" ? data.slug : null,
-	});
-	return {
-		id: updated.id,
-		type: updated.type,
-		data: updated.data,
-		createdAt: updated.createdAt,
-		updatedAt: updated.updatedAt,
-		locale: updated.locale ?? "en",
-	};
+	return createContentAccessWithWrite(db).update(collection, id, data, options);
+}
+
+async function contentPublish(
+	db: Kysely<Database>,
+	collection: string,
+	id: string,
+	options: ContentPublishOptions,
+): Promise<PluginContentItem> {
+	validateCollectionName(collection);
+	return createContentAccessWithWrite(db).publish(collection, id, options);
+}
+
+async function contentUnpublish(
+	db: Kysely<Database>,
+	collection: string,
+	id: string,
+	options: { expectedRevision?: string },
+): Promise<PluginContentItem> {
+	validateCollectionName(collection);
+	return createContentAccessWithWrite(db).unpublish(collection, id, options);
 }
 
 async function contentDelete(
@@ -919,23 +1027,14 @@ async function contentUpdateMany(
 	db: Kysely<Database>,
 	collection: string,
 	items: Array<{ id: string; data: Record<string, unknown> }>,
-): Promise<
-	Array<{
-		id: string;
-		type: string;
-		data: Record<string, unknown>;
-		createdAt: string;
-		updatedAt: string;
-		locale: string;
-	}>
-> {
+): Promise<PluginContentItem[]> {
 	if (items.length > MAX_BATCH_SIZE) {
 		throw new Error(`Batch size ${items.length} exceeds maximum of ${MAX_BATCH_SIZE}`);
 	}
 	return db.transaction().execute(async (trx) => {
 		const results = [];
 		for (const item of items) {
-			results.push(await contentUpdate(trx, collection, item.id, item.data));
+			results.push(await contentUpdate(trx, collection, item.id, item.data, {}));
 		}
 		return results;
 	});
@@ -1074,6 +1173,8 @@ function rowToMediaItem(row: {
 	size: number | null;
 	storage_key: string;
 	created_at: string;
+	sha256: string | null;
+	alt?: string | null;
 }) {
 	return {
 		id: row.id,
@@ -1082,6 +1183,8 @@ function rowToMediaItem(row: {
 		size: row.size,
 		url: `/_emdash/api/media/file/${row.storage_key}`,
 		createdAt: row.created_at,
+		sha256: row.sha256,
+		alt: row.alt ?? null,
 	};
 }
 
@@ -1095,6 +1198,7 @@ async function mediaGet(
 	size: number | null;
 	url: string;
 	createdAt: string;
+	sha256: string | null;
 } | null> {
 	const row = await db.selectFrom("media").where("id", "=", id).selectAll().executeTakeFirst();
 	if (!row) return null;
@@ -1112,6 +1216,7 @@ async function mediaList(
 		size: number | null;
 		url: string;
 		createdAt: string;
+		sha256: string | null;
 	}>;
 	cursor?: string;
 	hasMore: boolean;
@@ -1147,13 +1252,22 @@ async function mediaList(
 
 const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/", "application/pdf"];
 const FILE_EXT_RE = /^\.[a-z0-9]{1,10}$/i;
+const SHA256_RE = /^[a-f0-9]{64}$/i;
+const hasControlCharacter = (value: string) => {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+};
 
-async function mediaUpload(
+export async function mediaUpload(
 	db: Kysely<Database>,
 	filename: string,
 	contentType: string,
 	bytes: string | number[],
 	encoding: string | undefined,
+	options: { sha256?: string; alt?: string; deduplicate?: boolean },
 	storage?: BridgeStorage | null,
 ): Promise<{ mediaId: string; storageKey: string; url: string }> {
 	if (!storage) {
@@ -1167,9 +1281,9 @@ async function mediaUpload(
 			`Unsupported content type: ${contentType}. Allowed: image/*, video/*, audio/*, application/pdf`,
 		);
 	}
-
 	const { ulid } = await import("ulidx");
 	const mediaId = ulid();
+
 	const basename = filename.includes("/")
 		? filename.slice(filename.lastIndexOf("/") + 1)
 		: filename;
@@ -1186,6 +1300,49 @@ async function mediaUpload(
 		byteArray = new Uint8Array(bytes);
 	} else {
 		throw new Error("media/upload: bytes must be a base64-encoded string or an array of bytes");
+	}
+	const sha256 = await mediaSha256(byteArray.slice().buffer);
+	const expectedSha256 = options.sha256;
+	const alt = options.alt;
+	const deduplicate = options.deduplicate === true;
+	if (expectedSha256 !== undefined && !SHA256_RE.test(expectedSha256)) {
+		throw new Error("sha256 must be a 64-character hexadecimal digest");
+	}
+	if (expectedSha256 !== undefined && expectedSha256.toLowerCase() !== sha256) {
+		throw new Error("sha256 does not match uploaded bytes");
+	}
+	if (deduplicate && (!alt || alt.length > 255 || hasControlCharacter(alt))) {
+		throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
+	}
+	const enriched = { width: null, height: null };
+	const metadataMatches = (row: {
+		mime_type: string;
+		size: number | null;
+		width?: number | null;
+		height?: number | null;
+		alt?: string | null;
+	}) =>
+		row.mime_type === contentType &&
+		row.size === byteArray.byteLength &&
+		(enriched.width === null || (row.width ?? null) === enriched.width) &&
+		(enriched.height === null || (row.height ?? null) === enriched.height) &&
+		(row.alt ?? null) === (alt ?? null);
+	if (deduplicate) {
+		const existing = await db
+			.selectFrom("media")
+			.where("sha256", "=", sha256)
+			.where("status", "=", "ready")
+			.selectAll()
+			.executeTakeFirst();
+		if (existing) {
+			if (!metadataMatches(existing))
+				throw new Error("Media SHA-256 matches but metadata conflicts");
+			return {
+				mediaId: existing.id,
+				storageKey: existing.storage_key,
+				url: `/_emdash/api/media/file/${existing.storage_key}`,
+			};
+		}
 	}
 
 	// Write bytes to storage first, then create DB record.
@@ -1205,6 +1362,8 @@ async function mediaUpload(
 				storage_key: storageKey,
 				status: "ready",
 				created_at: now,
+				sha256,
+				alt: alt ?? null,
 			})
 			.execute();
 	} catch (error) {
@@ -1218,6 +1377,21 @@ async function mediaUpload(
 					`Storage object is leaked.`,
 				cleanupError,
 			);
+		}
+		const winner = await db
+			.selectFrom("media")
+			.where("sha256", "=", sha256)
+			.where("status", "=", "ready")
+			.selectAll()
+			.executeTakeFirst();
+		if (winner) {
+			if (!metadataMatches(winner))
+				throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
+			return {
+				mediaId: winner.id,
+				storageKey: winner.storage_key,
+				url: `/_emdash/api/media/file/${winner.storage_key}`,
+			};
 		}
 		throw error;
 	}
@@ -1542,6 +1716,7 @@ async function userList(
  * in-process plugins.
  */
 function getStorageRepo(opts: BridgeHandlerOptions, collection: string): PluginStorageRepository {
+	validateStorageCollection(opts, collection);
 	const config = opts.storageConfig?.[collection];
 	// Merge unique indexes into the indexes list since both are queryable
 	const allIndexes: Array<string | string[]> = [
@@ -1557,6 +1732,15 @@ async function storageGet(
 	id: string,
 ): Promise<unknown> {
 	return getStorageRepo(opts, collection).get(id);
+}
+
+async function storageCreate(
+	opts: BridgeHandlerOptions,
+	collection: string,
+	id: string,
+	data: unknown,
+): Promise<boolean> {
+	return getStorageRepo(opts, collection).create(id, data);
 }
 
 async function storagePut(

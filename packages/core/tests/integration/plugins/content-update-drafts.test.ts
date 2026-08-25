@@ -3,6 +3,7 @@ import { afterEach, beforeEach, expect, it } from "vitest";
 import { ContentRepository } from "../../../src/database/repositories/content.js";
 import { RevisionRepository } from "../../../src/database/repositories/revision.js";
 import { createContentAccessWithWrite } from "../../../src/plugins/context.js";
+import { PluginRevisionConflictError } from "../../../src/plugins/errors.js";
 import { SchemaRegistry } from "../../../src/schema/registry.js";
 import { createPostFixture } from "../../utils/fixtures.js";
 import {
@@ -66,6 +67,144 @@ describeEachDialect("plugin content updates with revisions", (dialect) => {
 		expect(promoted.data).toEqual({ title: "Plugin title", content: LIVE_BODY });
 		expect(promoted.draftRevisionId).toBeNull();
 		expect(promoted.liveRevisionId).toBe(staged?.draftRevisionId);
+	});
+
+	it("returns a revision token and rejects stale plugin updates", async () => {
+		const created = await contentRepo.create(
+			createPostFixture({ status: "draft", data: { title: "Original" } }),
+		);
+		const access = createContentAccessWithWrite(ctx.db);
+
+		const current = await access.get("post", created.id);
+		expect(current?.revision).toBeTruthy();
+		const beforeStaleWrite = await contentRepo.findById("post", created.id);
+
+		const updated = await access.update(
+			"post",
+			created.id,
+			{ title: "First" },
+			{
+				expectedRevision: current!.revision,
+			},
+		);
+		expect(updated.revision).toBeTruthy();
+		expect(updated.revision).not.toBe(current!.revision);
+		const afterFreshWrite = await contentRepo.findById("post", created.id);
+
+		await expect(
+			access.update(
+				"post",
+				created.id,
+				{ title: "Stale" },
+				{
+					expectedRevision: current!.revision,
+				},
+			),
+		).rejects.toBeInstanceOf(PluginRevisionConflictError);
+		await expect(
+			access.update(
+				"post",
+				created.id,
+				{ title: "Still stale" },
+				{ expectedRevision: current!.revision },
+			),
+		).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+		const afterStaleWrite = await contentRepo.findById("post", created.id);
+		expect(afterStaleWrite).toMatchObject({
+			data: { title: "First" },
+			slug: afterFreshWrite?.slug,
+			status: afterFreshWrite?.status,
+			liveRevisionId: afterFreshWrite?.liveRevisionId,
+			draftRevisionId: afterFreshWrite?.draftRevisionId,
+			version: afterFreshWrite?.version,
+		});
+		expect(afterStaleWrite?.updatedAt).toBe(afterFreshWrite?.updatedAt);
+		expect(afterStaleWrite?.version).toBe(beforeStaleWrite!.version + 1);
+	});
+
+	it("supports revision-safe plugin rename and publish", async () => {
+		const created = await contentRepo.create(
+			createPostFixture({ status: "draft", data: { title: "Rename me" }, slug: "before" }),
+		);
+		const access = createContentAccessWithWrite(ctx.db);
+		const current = await access.get("post", created.id);
+
+		const renamed = await access.update(
+			"post",
+			created.id,
+			{},
+			{
+				expectedRevision: current!.revision,
+				slug: "after",
+			},
+		);
+		expect(renamed.slug).toBe("before");
+
+		const published = await access.publish("post", created.id, {
+			expectedRevision: renamed.revision,
+		});
+		expect(published.status).toBe("published");
+		expect(published.slug).toBe("after");
+	});
+
+	it("rejects stale plugin unpublish without clearing the live revision", async () => {
+		const published = await createPublishedPost();
+		const access = createContentAccessWithWrite(ctx.db);
+		const current = await access.get("post", published.id);
+
+		await access.update("post", published.id, { title: "Manual edit" });
+		await expect(
+			access.unpublish("post", published.id, { expectedRevision: current!.revision }),
+		).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+		expect((await contentRepo.findById("post", published.id))?.status).toBe("published");
+	});
+
+	it("returns a typed conflict when publish observes a stale token", async () => {
+		const created = await contentRepo.create(
+			createPostFixture({ status: "draft", data: { title: "Publish race" } }),
+		);
+		const access = createContentAccessWithWrite(ctx.db);
+		const current = await access.get("post", created.id);
+		await access.update("post", created.id, { title: "Changed" });
+
+		await expect(
+			access.publish("post", created.id, { expectedRevision: current!.revision }),
+		).rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+	});
+
+	it("unpublishes with a matching token and creates the draft atomically", async () => {
+		const published = await createPublishedPost();
+		const access = createContentAccessWithWrite(ctx.db);
+		const current = await access.get("post", published.id);
+
+		const unpublished = await access.unpublish("post", published.id, {
+			expectedRevision: current!.revision,
+		});
+		expect(unpublished.status).toBe("draft");
+		expect(unpublished.revision).not.toBe(current!.revision);
+		const row = await contentRepo.findById("post", published.id);
+		expect(row).toMatchObject({ status: "draft", liveRevisionId: null });
+		expect(row?.draftRevisionId).toBeTruthy();
+		expect(row?.version).toBe(published.version + 1);
+	});
+
+	it("cleans up a provisional draft when a fenced repository unpublish conflicts", async () => {
+		const published = await createPublishedPost();
+		const before = await contentRepo.findById("post", published.id);
+		await expect(
+			contentRepo.unpublish("post", published.id, {
+				version: before!.version - 1,
+				liveRevisionId: before!.liveRevisionId,
+				draftRevisionId: before!.draftRevisionId,
+			}),
+		).rejects.toThrow(/conflict/i);
+		const after = await contentRepo.findById("post", published.id);
+		expect(after).toMatchObject({
+			status: "published",
+			version: before!.version,
+			liveRevisionId: before!.liveRevisionId,
+			draftRevisionId: before!.draftRevisionId,
+		});
 	});
 
 	it("merges a partial update into an existing draft", async () => {

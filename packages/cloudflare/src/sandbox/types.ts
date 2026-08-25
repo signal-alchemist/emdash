@@ -149,6 +149,8 @@ interface BridgeMediaItem {
 	size: number | null;
 	url: string;
 	createdAt: string;
+	sha256: string | null;
+	alt?: string | null;
 }
 
 /**
@@ -163,6 +165,7 @@ export interface PluginBridgeBinding {
 	kvList(prefix?: string): Promise<Array<{ key: string; value: unknown }>>;
 	// Storage
 	storageGet(collection: string, id: string): Promise<unknown>;
+	storageCreate(collection: string, id: string, data: unknown): Promise<boolean>;
 	storagePut(collection: string, id: string, data: unknown): Promise<void>;
 	storageDelete(collection: string, id: string): Promise<boolean>;
 	storageQuery(
@@ -209,6 +212,7 @@ export interface PluginBridgeBinding {
 		filename: string,
 		contentType: string,
 		bytes: ArrayBuffer,
+		options?: { sha256?: string; alt?: string; deduplicate?: boolean },
 	): Promise<{ mediaId: string; storageKey: string; url: string }>;
 	mediaDelete(id: string): Promise<boolean>;
 	// Network

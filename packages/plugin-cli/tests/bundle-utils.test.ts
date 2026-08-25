@@ -73,6 +73,29 @@ describe("extractManifest", () => {
 		expect(manifest.routes.toSorted((a, b) => a.localeCompare(b))).toEqual(["admin", "api"]);
 	});
 
+	it("serializes route body limits with auth metadata", () => {
+		const manifest = extractManifest(
+			minimalResolved({
+				routes: {
+					ingest: {
+						handler: () => {},
+						public: false,
+						permission: "content:read",
+						bodyLimit: 64_000,
+					},
+				},
+			}),
+		);
+		expect(manifest.routes).toEqual([
+			{
+				name: "ingest",
+				public: false,
+				permission: "content:read",
+				bodyLimit: 64_000,
+			},
+		]);
+	});
+
 	it("serializes explicitly declared MCP tools", () => {
 		const manifest = extractManifest(
 			minimalResolved({

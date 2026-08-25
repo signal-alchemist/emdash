@@ -9,7 +9,10 @@
  */
 
 import { MediaUsageActivationWriteBlockedError } from "../api/media-usage-write-fence.js";
+import { ContentMutationConflictError } from "../database/repositories/types.js";
+import { BoundedBodyError, readBoundedJson } from "./bounded-body.js";
 import { PluginContextFactory, type PluginContextFactoryOptions } from "./context.js";
+import { PluginRevisionConflictError } from "./errors.js";
 import { extractRequestMeta } from "./request-meta.js";
 import type { ResolvedPlugin, RouteContext, PluginRoute, UserInfo } from "./types.js";
 
@@ -61,6 +64,7 @@ export interface RouteMeta {
 	 * public routes — authenticated responses must stay `private, no-store`.
 	 */
 	cacheControl?: string;
+	bodyLimit?: number;
 }
 
 /**
@@ -72,6 +76,7 @@ export function buildRouteMeta(route: {
 	public?: boolean;
 	permission?: string;
 	cacheControl?: string;
+	bodyLimit?: number;
 }): RouteMeta {
 	const meta: RouteMeta = { public: route.public === true };
 	if (route.permission !== undefined) meta.permission = route.permission;
@@ -80,6 +85,8 @@ export function buildRouteMeta(route: {
 	if (meta.public && typeof route.cacheControl === "string" && route.cacheControl.length > 0) {
 		meta.cacheControl = route.cacheControl;
 	}
+	if (Number.isSafeInteger(route.bodyLimit) && route.bodyLimit! > 0)
+		meta.bodyLimit = route.bodyLimit;
 	return meta;
 }
 
@@ -88,6 +95,7 @@ export function buildRouteMeta(route: {
  * takes its route input from the URL query string.
  */
 const BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
+export { BoundedBodyError, BoundedBodyError as BoundedRouteBodyError } from "./bounded-body.js";
 
 /**
  * Parse a plugin route's input from the request, by method.
@@ -98,11 +106,13 @@ const BODY_METHODS = new Set(["POST", "PUT", "PATCH"]);
  * an object instead. Repeated keys (`?tag=a&tag=b`) become an array so array
  * schemas work; a single key stays a scalar.
  */
-export async function parseRouteInput(request: Request): Promise<unknown> {
+export async function parseRouteInput(request: Request, maxBodyBytes?: number): Promise<unknown> {
 	if (BODY_METHODS.has(request.method.toUpperCase())) {
 		try {
+			if (maxBodyBytes !== undefined) return await readBoundedJson(request, maxBodyBytes);
 			return await request.json();
-		} catch {
+		} catch (error) {
+			if (error instanceof BoundedBodyError) throw error;
 			// No body or not JSON
 			return undefined;
 		}
@@ -247,6 +257,16 @@ export class PluginRouteHandler {
 				status: 200,
 			};
 		} catch (error) {
+			if (
+				error instanceof PluginRevisionConflictError ||
+				error instanceof ContentMutationConflictError
+			) {
+				return {
+					success: false,
+					error: { code: "CONFLICT", message: error.message },
+					status: 409,
+				};
+			}
 			if (error instanceof MediaUsageActivationWriteBlockedError) {
 				return {
 					success: false,

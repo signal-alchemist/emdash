@@ -72,6 +72,7 @@ export interface MediaTable {
 	storage_key: string;
 	status: string; // 'pending' | 'ready' | 'failed'
 	content_hash: string | null; // xxHash64 for deduplication
+	sha256: string | null;
 	blurhash: string | null;
 	dominant_color: string | null;
 	created_at: Generated<string>;
@@ -690,6 +691,7 @@ export type MediaRow = {
 	storage_key: string;
 	status: string; // 'pending' | 'ready' | 'failed'
 	content_hash: string | null; // xxHash64 for deduplication
+	sha256: string | null;
 	blurhash: string | null;
 	dominant_color: string | null;
 	created_at: string;

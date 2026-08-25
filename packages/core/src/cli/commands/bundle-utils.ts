@@ -164,7 +164,8 @@ export function extractManifest(plugin: ResolvedPlugin): PluginManifest {
 			if (
 				route.public === undefined &&
 				route.permission === undefined &&
-				route.cacheControl === undefined
+				route.cacheControl === undefined &&
+				route.bodyLimit === undefined
 			) {
 				return name;
 			}
@@ -173,6 +174,7 @@ export function extractManifest(plugin: ResolvedPlugin): PluginManifest {
 			if (route.public !== undefined) entry.public = route.public;
 			if (route.permission !== undefined) entry.permission = route.permission;
 			if (route.cacheControl !== undefined) entry.cacheControl = route.cacheControl;
+			if (route.bodyLimit !== undefined) entry.bodyLimit = route.bodyLimit;
 			return entry;
 		},
 	);

@@ -101,6 +101,7 @@ function createContext(env) {
 	function createStorageCollection(collectionName) {
 		return {
 			get: (id) => bridge.storageGet(collectionName, id),
+			create: (id, data) => bridge.storageCreate(collectionName, id, data),
 			put: (id, data) => bridge.storagePut(collectionName, id, data),
 			delete: (id) => bridge.storageDelete(collectionName, id),
 			exists: async (id) => (await bridge.storageGet(collectionName, id)) !== null,
@@ -125,7 +126,9 @@ function createContext(env) {
 		get: (collection, id) => bridge.contentGet(collection, id),
 		list: (collection, opts) => bridge.contentList(collection, opts),
 		create: (collection, data, options) => bridge.contentCreate(collection, data, options),
-		update: (collection, id, data) => bridge.contentUpdate(collection, id, data),
+		update: (collection, id, data, options) => bridge.contentUpdate(collection, id, data, options),
+		publish: (collection, id, options) => bridge.contentPublish(collection, id, options),
+		unpublish: (collection, id, options) => bridge.contentUnpublish(collection, id, options),
 		delete: (collection, id) => bridge.contentDelete(collection, id)
 	};
 	
@@ -140,7 +143,7 @@ function createContext(env) {
 	const media = {
 		get: (id) => bridge.mediaGet(id),
 		list: (opts) => bridge.mediaList(opts),
-		upload: (filename, contentType, bytes) => bridge.mediaUpload(filename, contentType, bytes),
+		upload: (filename, contentType, bytes, options) => bridge.mediaUpload(filename, contentType, bytes, options),
 		getUploadUrl: () => { throw new Error("getUploadUrl is not available in sandbox mode. Use media.upload(filename, contentType, bytes) instead."); },
 		delete: (id) => bridge.mediaDelete(id)
 	};

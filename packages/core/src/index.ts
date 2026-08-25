@@ -254,9 +254,12 @@ export {
 	getSandboxRouteErrorDetails,
 	getSandboxRouteErrorEnvelope,
 	createNoopSandboxRunner,
+	createContentAccess,
+	createContentAccessWithWrite,
 	// HTTP access for plugins (shared between in-process, Cloudflare, and workerd runners)
 	createHttpAccess,
 	createUnrestrictedHttpAccess,
+	PluginRevisionConflictError,
 } from "./plugins/index.js";
 export type {
 	PluginDefinition,
@@ -268,6 +271,8 @@ export type {
 	KVAccess,
 	ContentAccess,
 	ContentCreateOptions,
+	ContentUpdateOptions,
+	ContentPublishOptions,
 	MediaAccess,
 	HttpAccess,
 	LogAccess,

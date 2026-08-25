@@ -44,6 +44,56 @@ function invoke(handler: APIRoute, method: string, locals: unknown) {
 }
 
 describe("plugin API catch-all Cache-Control", () => {
+	it("routes the GitHub sync webhook through the host ingress boundary", async () => {
+		const ingress = vi.fn(async () => ({ success: true, data: { accepted: true } }));
+		const request = new Request(
+			"https://example.com/_emdash/api/plugins/sa-github-content-sync/webhook",
+			{
+				method: "POST",
+				body: "raw-bytes",
+			},
+		);
+		const response = await POST({
+			params: { pluginId: "sa-github-content-sync", path: "webhook" },
+			request,
+			locals: {
+				emdash: { handlePluginApiRoute: vi.fn(), handleGithubContentSyncWebhook: ingress },
+			},
+		} as never);
+
+		expect(response.status).toBe(200);
+		expect(ingress).toHaveBeenCalledWith(request);
+	});
+
+	it("does not echo rejected webhook material or dispatch through the plugin route", async () => {
+		const secret = "webhook-secret";
+		const rawBody = "raw-webhook-body";
+		const ingress = vi.fn(async () => {
+			const error = Object.assign(new Error("internal details"), {
+				code: "GITHUB_SYNC_SIGNATURE_INVALID",
+				status: 401,
+			});
+			throw error;
+		});
+		const dispatch = vi.fn();
+		const response = await POST({
+			params: { pluginId: "sa-github-content-sync", path: "webhook" },
+			request: new Request("https://example.com/webhook", {
+				method: "POST",
+				body: rawBody,
+				headers: { "x-hub-signature-256": secret },
+			}),
+			locals: {
+				emdash: { handlePluginApiRoute: dispatch, handleGithubContentSyncWebhook: ingress },
+			},
+		} as never);
+		const text = await response.text();
+		expect(response.status).toBe(401);
+		expect(text).not.toContain(secret);
+		expect(text).not.toContain(rawBody);
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
 	it("sets the route's Cache-Control on a successful public GET", async () => {
 		const { locals } = createLocals({ cacheControl: CACHE_VALUE });
 		const res = await invoke(GET, "GET", locals);

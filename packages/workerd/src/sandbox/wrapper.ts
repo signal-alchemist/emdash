@@ -112,8 +112,17 @@ async function bridgeCall(method, body) {
 				});
 				throw error;
 			}
+			if (
+				payload?.error?.code === "CONFLICT" &&
+				payload.error.status === 409 &&
+				typeof payload.error.message === "string"
+			) {
+				throw Object.assign(new Error(payload.error.message), payload.error, {
+					name: "PluginRevisionConflictError",
+				});
+			}
 		} catch (error) {
-			if (sandboxRouteErrorDetails(error)) throw error;
+			if (sandboxRouteErrorDetails(error) || error?.code === "CONFLICT") throw error;
 		}
 		throw new Error("Bridge call " + method + " failed: " + text);
 	}
@@ -136,6 +145,7 @@ function createContext() {
 	function createStorageCollection(collectionName) {
 		return {
 			get: (id) => bridgeCall("storage/get", { collection: collectionName, id }),
+			create: (id, data) => bridgeCall("storage/create", { collection: collectionName, id, data }),
 			put: (id, data) => bridgeCall("storage/put", { collection: collectionName, id, data }),
 			delete: (id) => bridgeCall("storage/delete", { collection: collectionName, id }),
 			exists: async (id) => (await bridgeCall("storage/get", { collection: collectionName, id })) !== null,
@@ -164,7 +174,9 @@ function createContext() {
 		get: (collection, id) => bridgeCall("content/get", { collection, id }),
 		list: (collection, opts) => bridgeCall("content/list", { collection, ...opts }),
 		create: (collection, data, options) => bridgeCall("content/create", { collection, data, options }),
-		update: (collection, id, data) => bridgeCall("content/update", { collection, id, data }),
+		update: (collection, id, data, options) => bridgeCall("content/update", { collection, id, data, options }),
+		publish: (collection, id, options) => bridgeCall("content/publish", { collection, id, options }),
+		unpublish: (collection, id, options) => bridgeCall("content/unpublish", { collection, id, options }),
 		delete: (collection, id) => bridgeCall("content/delete", { collection, id }),
 		createMany: (collection, items) => bridgeCall("content/createMany", { collection, items }),
 		updateMany: (collection, items) => bridgeCall("content/updateMany", { collection, items }),
@@ -181,7 +193,7 @@ function createContext() {
 	const media = {
 		get: (id) => bridgeCall("media/get", { id }),
 		list: (opts) => bridgeCall("media/list", opts || {}),
-		upload: (filename, contentType, bytes) => {
+			upload: (filename, contentType, bytes, options) => {
 			// Convert any binary input into a Uint8Array view pointing at the
 			// SAME underlying bytes (not reinterpreted). For ArrayBufferView
 			// inputs (Uint16Array, Int32Array, DataView, etc.) we must use
@@ -204,6 +216,11 @@ function createContext() {
 				contentType,
 				bytes: btoa(binary),
 				encoding: "base64",
+				options: options === undefined ? undefined : {
+					sha256: options.sha256,
+					alt: options.alt,
+					deduplicate: options.deduplicate,
+				},
 			});
 		},
 		getUploadUrl: () => { throw new Error("getUploadUrl is not available in sandbox mode. Use media.upload() instead."); },

@@ -81,6 +81,25 @@ export class PluginStorageRepository<T = unknown> implements StorageCollection<T
 		return JSON.parse(row.data) as T;
 	}
 
+	/** Insert a document only when its ID is not already present. */
+	async create(id: string, data: T): Promise<boolean> {
+		const now = new Date().toISOString();
+		const result = await this.db
+			.insertInto("_plugin_storage")
+			.values({
+				plugin_id: this.pluginId,
+				collection: this.collection,
+				id,
+				data: JSON.stringify(data),
+				created_at: now,
+				updated_at: now,
+			})
+			.onConflict((oc) => oc.columns(["plugin_id", "collection", "id"]).doNothing())
+			.executeTakeFirst();
+		// Dialect adapters and test doubles may expose either bigint or number.
+		return Number(result.numInsertedOrUpdatedRows ?? 0) > 0;
+	}
+
 	/**
 	 * Store a document
 	 */

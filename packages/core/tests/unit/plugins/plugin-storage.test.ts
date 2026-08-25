@@ -85,6 +85,20 @@ describe("PluginStorageRepository", () => {
 		});
 	});
 
+	describe("create()", () => {
+		it("inserts once and does not overwrite a concurrent owner", async () => {
+			const first = { title: "first", status: "active", count: 1, createdAt: "2024-01-01" };
+			const second = { ...first, title: "second" };
+			expect(
+				await Promise.all([repo.create("owned", first), repo.create("owned", second)]).then((values) =>
+					values.filter(Boolean),
+				),
+			).toHaveLength(1);
+			expect((await repo.get("owned"))?.title).toMatch(/first|second/);
+			expect(await repo.create("owned", { ...first, title: "third" })).toBe(false);
+		});
+	});
+
 	describe("delete()", () => {
 		it("should return false for non-existent document", async () => {
 			const result = await repo.delete("non-existent");

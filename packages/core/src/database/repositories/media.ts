@@ -53,6 +53,7 @@ export interface MediaItem {
 	storageKey: string;
 	status: MediaStatus;
 	contentHash: string | null;
+	sha256: string | null;
 	blurhash: string | null;
 	dominantColor: string | null;
 	createdAt: string;
@@ -69,6 +70,7 @@ export interface CreateMediaInput {
 	caption?: string;
 	storageKey: string;
 	contentHash?: string;
+	sha256?: string;
 	blurhash?: string;
 	dominantColor?: string;
 	status?: MediaStatus;
@@ -87,6 +89,7 @@ export interface FindManyMediaOptions {
 
 const UPLOAD_ATTEMPT_CLEANUP_AGE_MS = 60 * 60 * 1000;
 const UPLOAD_ATTEMPT_CLEANUP_BATCH_SIZE = 100;
+const SHA256_RE = /^[0-9a-f]{64}$/i;
 
 /**
  * Media repository for database operations
@@ -98,6 +101,9 @@ export class MediaRepository {
 	 * Create a new media item
 	 */
 	async create(input: CreateMediaInput): Promise<MediaItem> {
+		if (input.sha256 !== undefined && !SHA256_RE.test(input.sha256)) {
+			throw new Error("Invalid SHA-256 digest");
+		}
 		const id = ulid();
 		const now = new Date().toISOString();
 
@@ -112,6 +118,7 @@ export class MediaRepository {
 			caption: input.caption ?? null,
 			storage_key: input.storageKey,
 			content_hash: input.contentHash ?? null,
+			sha256: input.sha256?.toLowerCase() ?? null,
 			blurhash: input.blurhash ?? null,
 			dominant_color: input.dominantColor ?? null,
 			status: input.status ?? "ready",
@@ -358,6 +365,21 @@ export class MediaRepository {
 		return row ? this.rowToItem(row) : null;
 	}
 
+	/** Find ready media by its authoritative SHA-256 digest. */
+	async findBySha256(sha256: string): Promise<MediaItem | null> {
+		if (!SHA256_RE.test(sha256)) {
+			throw new Error("Invalid SHA-256 digest");
+		}
+		const row = await this.db
+			.selectFrom("media")
+			.selectAll()
+			.where("sha256", "=", sha256.toLowerCase())
+			.where("status", "=", "ready")
+			.executeTakeFirst();
+
+		return row ? this.rowToItem(row) : null;
+	}
+
 	/**
 	 * Find many media items with cursor pagination
 	 *
@@ -515,6 +537,7 @@ export class MediaRepository {
 			caption: row.caption,
 			storageKey: row.storage_key,
 			contentHash: row.content_hash,
+			sha256: row.sha256,
 			blurhash: row.blurhash,
 			dominantColor: row.dominant_color,
 			// eslint-disable-next-line typescript/no-unsafe-type-assertion -- DB stores string; validated at insert but linter can't follow

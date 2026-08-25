@@ -13,6 +13,7 @@ import { z } from "zod";
 
 import type { PluginContextFactoryOptions } from "../../../src/plugins/context.js";
 import { EmailPipeline } from "../../../src/plugins/email.js";
+import { PluginRevisionConflictError } from "../../../src/plugins/errors.js";
 import { HookPipeline } from "../../../src/plugins/hooks.js";
 import {
 	parseRouteInput,
@@ -535,6 +536,29 @@ describe("PluginRouteHandler", () => {
 				contentType: "application/json",
 				forEachSawContentType: true,
 			});
+		});
+	});
+
+	it("maps revision conflicts to the stable plugin conflict response", async () => {
+		const plugin = createTestPlugin({
+			routes: {
+				update: {
+					handler: async () => {
+						throw new PluginRevisionConflictError();
+					},
+				},
+			},
+		});
+		const handler = new PluginRouteHandler(plugin, createMockFactoryOptions());
+
+		const result = await handler.invoke("update", {
+			request: new Request("http://test.com"),
+		});
+
+		expect(result).toEqual({
+			success: false,
+			error: { code: "CONFLICT", message: expect.stringMatching(/modified/i) },
+			status: 409,
 		});
 	});
 });

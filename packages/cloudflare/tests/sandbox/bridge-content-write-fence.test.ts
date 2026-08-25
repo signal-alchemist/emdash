@@ -36,17 +36,29 @@ function makeBridge(db: unknown, i18nConfig?: { defaultLocale: string; locales: 
 describe("PluginBridge content write fence", () => {
 	it("returns locale from content reads", async () => {
 		const db = {
-			prepare() {
+			prepare(sql: string) {
 				return {
 					bind() {
 						return this;
 					},
-					async first() {
+					async all() {
 						return {
-							id: "post-id",
-							locale: "fr",
-							created_at: "2026-08-16T00:00:00.000Z",
-							updated_at: "2026-08-16T00:00:00.000Z",
+							meta: { changes: 0 },
+							results: sql.includes("ec_posts")
+								? [
+										{
+											id: "post-id",
+											slug: "post",
+											status: "draft",
+											version: 1,
+											live_revision_id: null,
+											draft_revision_id: null,
+											locale: "fr",
+											created_at: "2026-08-16T00:00:00.000Z",
+											updated_at: "2026-08-16T00:00:00.000Z",
+										},
+									]
+								: [{ has_seo: 0 }],
 						};
 					},
 				};
@@ -56,6 +68,7 @@ describe("PluginBridge content write fence", () => {
 		const item = await makeBridge(db).contentGet("posts", "post-id");
 
 		expect(item?.locale).toBe("fr");
+		expect(item?.revision).toEqual(expect.any(String));
 	});
 
 	it("rejects content mutations while media usage activation is incomplete", async () => {

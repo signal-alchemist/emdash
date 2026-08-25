@@ -142,6 +142,8 @@ export interface PaginatedResult<T> {
 export interface StorageCollection<T = unknown> {
 	// Basic CRUD
 	get(id: string): Promise<T | null>;
+	/** Insert only when absent; returns false when another writer owns the ID. */
+	create(id: string, data: T): Promise<boolean>;
 	put(id: string, data: T): Promise<void>;
 	delete(id: string): Promise<boolean>;
 	exists(id: string): Promise<boolean>;
@@ -229,6 +231,8 @@ export interface ContentItem {
 	publishedAt: string | null;
 	/** Scheduled publication time, if set (e.g. scheduled items or scheduled draft changes). */
 	scheduledAt?: string | null;
+	/** Opaque optimistic-concurrency token for plugin writes. */
+	revision?: string;
 }
 
 export interface ContentListWhere {
@@ -266,6 +270,18 @@ export type ContentWriteInput = Record<string, unknown> & {
 export interface ContentCreateOptions {
 	/** Locale for the new content row. Defaults to the configured site locale, then `en`. */
 	locale?: string;
+}
+
+/** Optional optimistic-concurrency and slug controls for plugin updates. */
+export interface ContentUpdateOptions {
+	expectedRevision?: string;
+	slug?: string | null;
+}
+
+/** Optional optimistic-concurrency controls for plugin publication. */
+export interface ContentPublishOptions {
+	expectedRevision?: string;
+	publishedAt?: string;
 }
 
 /**
@@ -351,7 +367,18 @@ export interface ContentAccessWithWrite extends ContentAccess {
 		data: ContentWriteInput,
 		options?: ContentCreateOptions,
 	): Promise<ContentItem>;
-	update(collection: string, id: string, data: ContentWriteInput): Promise<ContentItem>;
+	update(
+		collection: string,
+		id: string,
+		data: ContentWriteInput,
+		options?: ContentUpdateOptions,
+	): Promise<ContentItem>;
+	publish(collection: string, id: string, options?: ContentPublishOptions): Promise<ContentItem>;
+	unpublish(
+		collection: string,
+		id: string,
+		options?: { expectedRevision?: string },
+	): Promise<ContentItem>;
 	delete(collection: string, id: string): Promise<boolean>;
 }
 
@@ -365,6 +392,10 @@ export interface MediaItem {
 	size: number | null;
 	url: string;
 	createdAt: string;
+	width?: number | null;
+	height?: number | null;
+	alt?: string | null;
+	sha256?: string | null;
 }
 
 /**
@@ -376,12 +407,22 @@ export interface MediaListOptions {
 	mimeType?: string; // Filter by mime type prefix, e.g., "image/"
 }
 
+export interface MediaUploadOptions {
+	/** Expected SHA-256 digest; validated against the uploaded bytes. */
+	sha256?: string;
+	/** Editorial alt text used for exact replay matching and new records. */
+	alt?: string;
+	/** Reuse an existing item only when all supplied metadata matches exactly. */
+	deduplicate?: boolean;
+}
+
 /**
  * Media access interface - capability-gated
  */
 export interface MediaAccess {
 	// Read operations (requires read:media)
 	get(id: string): Promise<MediaItem | null>;
+	findBySha256(sha256: string): Promise<MediaItem | null>;
 	list(options?: MediaListOptions): Promise<PaginatedResult<MediaItem>>;
 
 	// Write operations (requires write:media) - optional on interface
@@ -398,6 +439,7 @@ export interface MediaAccess {
 		filename: string,
 		contentType: string,
 		bytes: ArrayBuffer,
+		options?: MediaUploadOptions,
 	): Promise<{ mediaId: string; storageKey: string; url: string }>;
 	delete?(id: string): Promise<boolean>;
 }
@@ -414,6 +456,7 @@ export interface MediaAccessWithWrite extends MediaAccess {
 		filename: string,
 		contentType: string,
 		bytes: ArrayBuffer,
+		options?: MediaUploadOptions,
 	): Promise<{ mediaId: string; storageKey: string; url: string }>;
 	delete(id: string): Promise<boolean>;
 }
@@ -1218,6 +1261,7 @@ export interface RouteContext<TInput = unknown> extends PluginContext {
  * Route definition
  */
 export interface PluginRoute<TInput = unknown> {
+	bodyLimit?: number;
 	/** Zod schema for input validation */
 	input?: z.ZodType<TInput>;
 	/**

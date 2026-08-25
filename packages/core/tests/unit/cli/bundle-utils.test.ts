@@ -103,6 +103,19 @@ describe("extractManifest", () => {
 		]);
 	});
 
+	it("emits structured route entries for body limits", () => {
+		const plugin = mockPlugin({
+			routes: {
+				ingest: { handler: vi.fn(), permission: "content:read", bodyLimit: 64_000 },
+			},
+		});
+
+		const manifest = extractManifest(plugin);
+		expect(manifest.routes).toEqual([
+			{ name: "ingest", permission: "content:read", bodyLimit: 64_000 },
+		]);
+	});
+
 	it("strips admin.entry (host-only concern, not in bundles)", () => {
 		const plugin = mockPlugin({
 			admin: {
