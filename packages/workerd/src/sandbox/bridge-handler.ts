@@ -1253,10 +1253,13 @@ async function mediaList(
 const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/", "application/pdf"];
 const FILE_EXT_RE = /^\.[a-z0-9]{1,10}$/i;
 const SHA256_RE = /^[a-f0-9]{64}$/i;
-const hasControlCharacter = (value: string) => [...value].some((char) => {
-	const code = char.codePointAt(0) ?? 0;
-	return code < 32 || code === 127;
-});
+const hasControlCharacter = (value: string) => {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+};
 
 export async function mediaUpload(
 	db: Kysely<Database>,
@@ -1312,13 +1315,33 @@ export async function mediaUpload(
 		throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
 	}
 	const enriched = { width: null, height: null };
-	const metadataMatches = (row: { mime_type: string; size: number | null; width?: number | null; height?: number | null; alt?: string | null }) =>
-		row.mime_type === contentType && row.size === byteArray.byteLength && (enriched.width === null || (row.width ?? null) === enriched.width) && (enriched.height === null || (row.height ?? null) === enriched.height) && (row.alt ?? null) === (alt ?? null);
+	const metadataMatches = (row: {
+		mime_type: string;
+		size: number | null;
+		width?: number | null;
+		height?: number | null;
+		alt?: string | null;
+	}) =>
+		row.mime_type === contentType &&
+		row.size === byteArray.byteLength &&
+		(enriched.width === null || (row.width ?? null) === enriched.width) &&
+		(enriched.height === null || (row.height ?? null) === enriched.height) &&
+		(row.alt ?? null) === (alt ?? null);
 	if (deduplicate) {
-		const existing = await db.selectFrom("media").where("sha256", "=", sha256).where("status", "=", "ready").selectAll().executeTakeFirst();
+		const existing = await db
+			.selectFrom("media")
+			.where("sha256", "=", sha256)
+			.where("status", "=", "ready")
+			.selectAll()
+			.executeTakeFirst();
 		if (existing) {
-			if (!metadataMatches(existing)) throw new Error("Media SHA-256 matches but metadata conflicts");
-			return { mediaId: existing.id, storageKey: existing.storage_key, url: `/_emdash/api/media/file/${existing.storage_key}` };
+			if (!metadataMatches(existing))
+				throw new Error("Media SHA-256 matches but metadata conflicts");
+			return {
+				mediaId: existing.id,
+				storageKey: existing.storage_key,
+				url: `/_emdash/api/media/file/${existing.storage_key}`,
+			};
 		}
 	}
 
@@ -1355,10 +1378,20 @@ export async function mediaUpload(
 				cleanupError,
 			);
 		}
-		const winner = await db.selectFrom("media").where("sha256", "=", sha256).where("status", "=", "ready").selectAll().executeTakeFirst();
+		const winner = await db
+			.selectFrom("media")
+			.where("sha256", "=", sha256)
+			.where("status", "=", "ready")
+			.selectAll()
+			.executeTakeFirst();
 		if (winner) {
-			if (!metadataMatches(winner)) throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
-			return { mediaId: winner.id, storageKey: winner.storage_key, url: `/_emdash/api/media/file/${winner.storage_key}` };
+			if (!metadataMatches(winner))
+				throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
+			return {
+				mediaId: winner.id,
+				storageKey: winner.storage_key,
+				url: `/_emdash/api/media/file/${winner.storage_key}`,
+			};
 		}
 		throw error;
 	}

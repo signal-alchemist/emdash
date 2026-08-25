@@ -47,17 +47,29 @@ const MISSING_MEDIA_USAGE_ACTIVATION_TABLE_REGEX = /no such table.*_emdash_media
 /** Regex to validate file extensions (simple alphanumeric, 1-10 chars) */
 const FILE_EXT_REGEX = /^\.[a-z0-9]{1,10}$/i;
 const SHA256_REGEX = /^[a-f0-9]{64}$/i;
-const hasControlCharacter = (value: string) => [...value].some((char) => {
-	const code = char.codePointAt(0) ?? 0;
-	return code < 32 || code === 127;
-});
-function isMediaUploadOptions(value: unknown): value is { sha256?: string; alt?: string; deduplicate?: boolean } {
-	if (typeof value !== "object" || value === null || Object.getPrototypeOf(value) !== Object.prototype) return false;
-	const record = value as Record<string, unknown>;
-	return Object.keys(record).every((key) => key === "sha256" || key === "alt" || key === "deduplicate") &&
-		(record.sha256 === undefined || typeof record.sha256 === "string") &&
-		(record.alt === undefined || typeof record.alt === "string") &&
-		(record.deduplicate === undefined || typeof record.deduplicate === "boolean");
+const hasControlCharacter = (value: string) => {
+	for (let index = 0; index < value.length; index++) {
+		const code = value.charCodeAt(index);
+		if (code < 32 || code === 127) return true;
+	}
+	return false;
+};
+function isMediaUploadOptions(
+	value: unknown,
+): value is { sha256?: string; alt?: string; deduplicate?: boolean } {
+	if (
+		typeof value !== "object" ||
+		value === null ||
+		Object.getPrototypeOf(value) !== Object.prototype
+	)
+		return false;
+	return Object.entries(value).every(
+		([key, option]) =>
+			(option === undefined && (key === "sha256" || key === "alt" || key === "deduplicate")) ||
+			(key === "sha256" && typeof option === "string") ||
+			(key === "alt" && typeof option === "string") ||
+			(key === "deduplicate" && typeof option === "boolean"),
+	);
 }
 
 /** System columns that plugins cannot directly write to */
@@ -1017,7 +1029,8 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		options: { sha256?: string; alt?: string; deduplicate?: boolean } = {},
 	): Promise<{ mediaId: string; storageKey: string; url: string }> {
 		const { capabilities } = this.ctx.props;
-		if (!isMediaUploadOptions(options)) throw new Error("media/upload: options must be an exact object");
+		if (!isMediaUploadOptions(options))
+			throw new Error("media/upload: options must be an exact object");
 		if (!capabilities.includes("media:write")) {
 			throw new Error("Missing capability: media:write");
 		}
@@ -1051,16 +1064,44 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 		if (options.sha256 !== undefined && options.sha256.toLowerCase() !== sha256) {
 			throw new Error("sha256 does not match uploaded bytes");
 		}
-		if (options.deduplicate && (!options.alt || options.alt.length > 255 || hasControlCharacter(options.alt))) {
+		if (
+			options.deduplicate &&
+			(!options.alt || options.alt.length > 255 || hasControlCharacter(options.alt))
+		) {
 			throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
 		}
 		const existing = options.deduplicate
-			? await this.env.DB.prepare("SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1").bind(sha256).first<{ id: string; storage_key: string; mime_type: string; size: number | null; width: number | null; height: number | null; alt: string | null }>()
+			? await this.env.DB.prepare(
+					"SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1",
+				)
+					.bind(sha256)
+					.first<{
+						id: string;
+						storage_key: string;
+						mime_type: string;
+						size: number | null;
+						width: number | null;
+						height: number | null;
+						alt: string | null;
+					}>()
 			: null;
-		const matches = (row: { mime_type: string; size: number | null; width?: number | null; height?: number | null; alt?: string | null }) => row.mime_type === contentType && row.size === bytes.byteLength && (row.alt ?? null) === (options.alt ?? null);
+		const matches = (row: {
+			mime_type: string;
+			size: number | null;
+			width?: number | null;
+			height?: number | null;
+			alt?: string | null;
+		}) =>
+			row.mime_type === contentType &&
+			row.size === bytes.byteLength &&
+			(row.alt ?? null) === (options.alt ?? null);
 		if (existing) {
 			if (!matches(existing)) throw new Error("Media SHA-256 matches but metadata conflicts");
-			return { mediaId: existing.id, storageKey: existing.storage_key, url: `/_emdash/api/media/file/${existing.storage_key}` };
+			return {
+				mediaId: existing.id,
+				storageKey: existing.storage_key,
+				url: `/_emdash/api/media/file/${existing.storage_key}`,
+			};
 		}
 
 		// Write bytes to R2 first, then create DB record.
@@ -1074,7 +1115,16 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 			await this.env.DB.prepare(
 				"INSERT INTO media (id, filename, mime_type, size, storage_key, status, created_at, sha256, alt) VALUES (?, ?, ?, ?, ?, 'ready', ?, ?, ?)",
 			)
-				.bind(mediaId, filename, contentType, bytes.byteLength, storageKey, now, sha256, options.alt ?? null)
+				.bind(
+					mediaId,
+					filename,
+					contentType,
+					bytes.byteLength,
+					storageKey,
+					now,
+					sha256,
+					options.alt ?? null,
+				)
 				.run();
 		} catch (error) {
 			// Clean up R2 object on DB failure to prevent orphans
@@ -1084,10 +1134,27 @@ export class PluginBridge extends WorkerEntrypoint<PluginBridgeEnv, PluginBridge
 				// Best-effort cleanup — log and continue
 				console.warn(`[plugin-bridge] Failed to clean up orphaned R2 object: ${storageKey}`);
 			}
-			const winner = await this.env.DB.prepare("SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1").bind(sha256).first<{ id: string; storage_key: string; mime_type: string; size: number | null; width: number | null; height: number | null; alt: string | null }>();
+			const winner = await this.env.DB.prepare(
+				"SELECT * FROM media WHERE sha256 = ? AND status = 'ready' LIMIT 1",
+			)
+				.bind(sha256)
+				.first<{
+					id: string;
+					storage_key: string;
+					mime_type: string;
+					size: number | null;
+					width: number | null;
+					height: number | null;
+					alt: string | null;
+				}>();
 			if (winner) {
-				if (!matches(winner)) throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
-				return { mediaId: winner.id, storageKey: winner.storage_key, url: `/_emdash/api/media/file/${winner.storage_key}` };
+				if (!matches(winner))
+					throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
+				return {
+					mediaId: winner.id,
+					storageKey: winner.storage_key,
+					url: `/_emdash/api/media/file/${winner.storage_key}`,
+				};
 			}
 			throw error;
 		}
