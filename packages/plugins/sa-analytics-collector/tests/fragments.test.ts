@@ -93,6 +93,11 @@ describe("analytics native page fragments", () => {
 		expect(fragments[0]).toMatchObject({ kind: "inline-script", placement: "body:end" });
 		expect((fragments[0] as { code: string }).code).toContain("post-1");
 	});
+	it("defaults the browser client to the registered public plugin route", () => {
+		const code = (analyticsPageFragments(page(), {})[0] as { code: string }).code;
+		expect(code).toContain("/_emdash/api/plugins/sa-analytics-collector/analytics/collect");
+		expect(code).not.toContain("/api/analytics");
+	});
 	it("starts the self-contained client in a browser-like VM", async () => {
 		const { runtime, fetchImpl } = boot();
 		const client = runtime.__EMDASH_ANALYTICS_CLIENT__ as {

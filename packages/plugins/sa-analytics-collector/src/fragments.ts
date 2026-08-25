@@ -10,8 +10,10 @@ export interface AnalyticsFragment {
 	key: string;
 	code: string;
 }
+export const ANALYTICS_PUBLIC_ROUTE =
+	"/_emdash/api/plugins/sa-analytics-collector/analytics/collect";
 function publicEndpoint(endpoint: string | undefined): string {
-	const candidate = endpoint ?? "/api/analytics";
+	const candidate = endpoint ?? ANALYTICS_PUBLIC_ROUTE;
 	if (
 		candidate.startsWith("/") &&
 		!candidate.startsWith("//") &&
@@ -22,10 +24,10 @@ function publicEndpoint(endpoint: string | undefined): string {
 	try {
 		const url = new URL(candidate);
 		if (url.protocol !== "https:" || url.username || url.password || url.search || url.hash)
-			return "/api/analytics";
-		return "/api/analytics";
+			return ANALYTICS_PUBLIC_ROUTE;
+		return ANALYTICS_PUBLIC_ROUTE;
 	} catch {
-		return "/api/analytics";
+		return ANALYTICS_PUBLIC_ROUTE;
 	}
 }
 

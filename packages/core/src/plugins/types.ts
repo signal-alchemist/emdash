@@ -1261,6 +1261,7 @@ export interface RouteContext<TInput = unknown> extends PluginContext {
  * Route definition
  */
 export interface PluginRoute<TInput = unknown> {
+	bodyLimit?: number;
 	/** Zod schema for input validation */
 	input?: z.ZodType<TInput>;
 	/**

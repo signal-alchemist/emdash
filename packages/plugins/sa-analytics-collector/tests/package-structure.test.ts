@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import contentInsightsPlugin from "../../sa-content-insights/src/index.js";
 import githubContentSyncPlugin from "../../sa-github-content-sync/src/index.js";
 import { analyticsCollectorPlugin } from "../src/descriptor.js";
+import { createPlugin } from "../src/index.js";
 
 const packageRoot = fileURLToPath(new URL("..", import.meta.url));
 
@@ -45,6 +46,16 @@ describe("marketing automation plugin package contracts", () => {
 			entrypoint: "@signal-alchemist/emdash-plugin-analytics-collector",
 		});
 		expect(descriptor.options).toEqual({});
+	});
+	it("registers only the public bounded analytics route and least capability", () => {
+		const plugin = createPlugin();
+		expect(plugin.capabilities).toEqual(["hooks.page-fragments:register"]);
+		expect(Object.keys(plugin.routes)).toEqual(["analytics/collect"]);
+		expect(plugin.routes["analytics/collect"]).toMatchObject({
+			public: true,
+			bodyLimit: 64_000,
+		});
+		expect(Object.keys(plugin.storage ?? {})).toEqual([]);
 	});
 
 	it.each(["../../sa-content-insights/package.json", "../../sa-github-content-sync/package.json"])(

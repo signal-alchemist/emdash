@@ -208,6 +208,7 @@ import {
 } from "./index.js";
 import { getDb } from "./loader.js";
 import { isRecord } from "./plugin-utils.js";
+import { BoundedBodyError } from "./plugins/bounded-body.js";
 import { CronExecutor, type InvokeCronHookFn } from "./plugins/cron.js";
 import { definePlugin } from "./plugins/define-plugin.js";
 import { DEV_CONSOLE_EMAIL_PLUGIN_ID, devConsoleEmailDeliver } from "./plugins/email-console.js";
@@ -3827,7 +3828,22 @@ export class EmDashRuntime {
 			const routeKey = path.replace(LEADING_SLASH_PATTERN, "");
 
 			// Body methods parse JSON; GET/HEAD/DELETE parse the query string (#2146).
-			const body = await parseRouteInput(request);
+			let body: unknown;
+			try {
+				body = await parseRouteInput(
+					request,
+					routeRegistry.getRouteMeta(pluginId, routeKey)?.bodyLimit,
+				);
+			} catch (error) {
+				if (error instanceof BoundedBodyError) {
+					return {
+						success: false,
+						error: { code: error.code, message: error.message },
+						status: error.status,
+					};
+				}
+				throw error;
+			}
 
 			return routeRegistry.invoke(pluginId, routeKey, { request, body, user: caller });
 		}
