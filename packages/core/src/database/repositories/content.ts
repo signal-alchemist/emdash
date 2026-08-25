@@ -2103,7 +2103,7 @@ export class ContentRepository {
 		}
 		// Unpublishing an already-draft item is idempotent. Do not advance its
 		// optimistic-concurrency version or create a phantom revision.
-		if (!existing.liveRevisionId) return existing;
+		if (existing.status === "draft") return existing;
 		const fence = expected ?? existing;
 		const revisionRepo = new RevisionRepository(this.db);
 		let provisionalRevisionId: string | undefined;

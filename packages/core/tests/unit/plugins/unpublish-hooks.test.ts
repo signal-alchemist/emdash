@@ -100,6 +100,7 @@ describe("content unpublish hooks", () => {
 			type: "post",
 			slug: "published-post",
 			status: "published",
+			publishedAt: "2026-08-24T00:00:00.000Z",
 			data: { title: "Published post" },
 		});
 		deferredTasks.length = 0;
@@ -107,6 +108,11 @@ describe("content unpublish hooks", () => {
 		const result = await runtime.handleContentUnpublish("post", item.id);
 
 		expect(result.success).toBe(true);
+		expect(await repo.findById("post", item.id)).toMatchObject({
+			status: "draft",
+			publishedAt: null,
+			version: item.version + 1,
+		});
 		expect(afterUnpublish).not.toHaveBeenCalled();
 
 		await flushLatestDeferredHook();
@@ -119,6 +125,8 @@ describe("content unpublish hooks", () => {
 					id: item.id,
 					slug: "published-post",
 					status: "draft",
+					publishedAt: null,
+					version: item.version + 1,
 				}),
 			}),
 		);
