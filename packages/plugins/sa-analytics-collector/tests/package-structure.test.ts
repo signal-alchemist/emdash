@@ -64,7 +64,11 @@ describe("marketing automation plugin package contracts", () => {
 			"sa-content-insights",
 			["snapshots", "experiments", "proposals"],
 		],
-		["../../sa-github-content-sync/emdash-plugin.jsonc", "sa-github-content-sync", ["sync_runs"]],
+		[
+			"../../sa-github-content-sync/emdash-plugin.jsonc",
+			"sa-github-content-sync",
+			["sync_runs", "sync_mappings"],
+		],
 	] as const)(
 		"validates the authoring manifest for %s",
 		async (relativePath, slug, collections) => {
@@ -92,7 +96,7 @@ describe("marketing automation plugin package contracts", () => {
 				id: "sa-github-content-sync",
 				capabilities: ["content:write", "media:write", "network:request"],
 				allowedHosts: ["api.github.com", "raw.githubusercontent.com"],
-				storage: ["sync_runs"],
+				storage: ["sync_runs", "sync_mappings"],
 			},
 		],
 	] as const)("exposes the standard descriptor trust contract", (factory, expected) => {
@@ -109,6 +113,19 @@ describe("marketing automation plugin package contracts", () => {
 		});
 		expect(Object.keys(descriptor.storage ?? {})).toEqual(expected.storage);
 	});
+
+	it.each([
+		["../../sa-content-insights/emdash-plugin.jsonc", contentInsightsPlugin],
+		["../../sa-github-content-sync/emdash-plugin.jsonc", githubContentSyncPlugin],
+	] as const)(
+		"keeps manifest and runtime storage descriptors aligned for %s",
+		async (relativePath, factory) => {
+			const manifest = await readManifest(relativePath);
+			const descriptor = factory();
+
+			expect(descriptor.storage).toEqual(manifest.storage);
+		},
+	);
 
 	it("keeps the native package source entrypoints present", async () => {
 		await expect(readFile(`${packageRoot}/src/index.ts`, "utf8")).resolves.toContain(

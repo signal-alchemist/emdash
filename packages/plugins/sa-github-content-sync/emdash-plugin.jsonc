@@ -10,7 +10,7 @@
 	"allowedHosts": ["api.github.com", "raw.githubusercontent.com"],
 	"storage": {
 		"sync_runs": {
-			"indexes": ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"],
+			"indexes": ["deliveryId", "commitSha", "sourcePath", "contentId", "status", "createdAt"]
 		},
 		"sync_mappings": {
 			"indexes": [
@@ -20,12 +20,12 @@
 				"locale",
 				"contentId",
 				"status",
-				"lastCommitSha",
-			],
-		},
+				"lastCommitSha"
+			]
+		}
 	},
 	"admin": {
 		"pages": [{ "path": "/deliveries", "label": "Content Sync", "icon": "arrows-clockwise" }],
-		"widgets": [{ "id": "sync-status", "title": "Content Sync", "size": "third" }],
-	},
+		"widgets": [{ "id": "sync-status", "title": "Content Sync", "size": "third" }]
+	}
 }
