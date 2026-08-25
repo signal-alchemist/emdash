@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+	ingestAnalyticsBatch,
+	MemoryAnalyticsBackend,
+} from "../../../analytics-service/src/index.js";
+import {
 	createAnalyticsForwarder,
 	ingestAnalytics,
 	ANALYTICS_UPSTREAM,
@@ -45,6 +49,18 @@ const controls = (overrides: Partial<AnalyticsIngressOptions> = {}): AnalyticsIn
 	now: () => Date.parse("2026-08-25T01:00:00Z"),
 	...overrides,
 });
+
+async function bodyHmac(secret: string, body: string): Promise<string> {
+	const key = await crypto.subtle.importKey(
+		"raw",
+		new TextEncoder().encode(secret),
+		{ name: "HMAC", hash: "SHA-256" },
+		false,
+		["sign"],
+	);
+	const digest = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body));
+	return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
 
 describe("analytics ingress", () => {
 	it("requires exact same-origin and validates before reservation", async () => {
@@ -130,7 +146,21 @@ describe("analytics ingress", () => {
 			expect.any(String),
 			expect.stringMatching(/^[a-f0-9]{64}$/),
 			expect.any(AbortSignal),
+			expect.stringMatching(/^[a-f0-9]{64}$/),
 		);
+	});
+	it("signs the exact canonical body supplied to the forwarder", async () => {
+		const sharedSecret = "collector-service-secret-0123456789";
+		const forward = vi.fn(async () => "accepted" as const);
+		await ingestAnalytics(
+			ctx(),
+			controls({
+				secret: sharedSecret,
+				forwarder: { forward },
+			}),
+		);
+		const [body, , , signature] = forward.mock.calls[0]!;
+		expect(signature).toBe(await bodyHmac(sharedSecret, body));
 	});
 	it("rolls back once for upstream rejection", async () => {
 		const rollback = vi.fn();
@@ -191,16 +221,86 @@ describe("analytics ingress", () => {
 		expect(() => createAnalyticsForwarder("https://evil.test/events")).toThrow();
 		const fetchMock = vi.fn(async () => new Response("secret upstream body", { status: 200 }));
 		vi.stubGlobal("fetch", fetchMock);
-		const result = await createAnalyticsForwarder(ANALYTICS_UPSTREAM).forward(
+		const forwarder = createAnalyticsForwarder(ANALYTICS_UPSTREAM);
+		const result = await forwarder.forward(
 			"{}",
 			"id-1",
 			new AbortController().signal,
+			"a".repeat(64),
 		);
 		expect(result).toBe("accepted");
 		expect(fetchMock).toHaveBeenCalledWith(
 			ANALYTICS_UPSTREAM,
-			expect.objectContaining({ redirect: "error", body: "{}" }),
+			expect.objectContaining({
+				redirect: "error",
+				body: "{}",
+				headers: {
+					"content-type": "application/json",
+					"x-analytics-version": "1",
+					"x-idempotency-key": "id-1",
+					"x-analytics-signature": `sha256=${"a".repeat(64)}`,
+				},
+			}),
 		);
+		fetchMock.mockClear();
+		for (const signature of [
+			"",
+			"malformed",
+			`sha256=${"a".repeat(64)}`,
+			"A".repeat(64),
+			undefined,
+		]) {
+			await expect(
+				forwarder.forward("{}", "id-1", new AbortController().signal, signature as never),
+			).rejects.toThrow("Analytics upstream body signature is invalid");
+		}
+		expect(fetchMock).not.toHaveBeenCalled();
+		vi.unstubAllGlobals();
+	});
+	it("signs the exact body for the analytics service and rejects body tampering", async () => {
+		const sharedSecret = "collector-service-secret-0123456789";
+		const backend = new MemoryAnalyticsBackend();
+		let forwardedRequest: Request | undefined;
+		vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+			const request = new Request(input, init);
+			forwardedRequest = request.clone();
+			const result = await ingestAnalyticsBatch(request, backend, {
+				secret: sharedSecret,
+				now: () => Date.parse("2026-08-25T01:00:00Z"),
+			});
+			return new Response(JSON.stringify(result.body), { status: result.status });
+		});
+		const result = await ingestAnalytics(
+			ctx(),
+			controls({
+				secret: sharedSecret,
+				forwarder: createAnalyticsForwarder(),
+			}),
+		);
+		expect(result).toEqual({ accepted: true });
+		expect(forwardedRequest).toBeDefined();
+		const request = forwardedRequest;
+		if (!request) throw new Error("forwarded request was not captured");
+		const body = await request.clone().text();
+		expect(request.headers.get("x-analytics-version")).toBe("1");
+		expect(request.headers.get("x-idempotency-key")).toMatch(/^[a-f0-9]{64}$/);
+		expect(request.headers.get("x-analytics-signature")).toBe(
+			`sha256=${await bodyHmac(sharedSecret, body)}`,
+		);
+		const tampered = new Request(request.url, {
+			method: "POST",
+			headers: request.headers,
+			body: body.replace("page_view", "cta_click"),
+		});
+		expect(
+			await ingestAnalyticsBatch(tampered, backend, {
+				secret: sharedSecret,
+				now: () => Date.parse("2026-08-25T01:00:00Z"),
+			}),
+		).toMatchObject({ status: 401, body: { code: "UNAUTHORIZED" } });
+		const stored = JSON.stringify((await backend.page(null, 10)).rows);
+		expect(stored).not.toContain(sharedSecret);
+		expect(stored).not.toContain("203.0.113.1");
 		vi.unstubAllGlobals();
 	});
 	it("maps fixed forwarder non-success and thrown fetch responses", async () => {
@@ -212,7 +312,13 @@ describe("analytics ingress", () => {
 		].map((fetchImpl, index) => [fetchImpl, index === 0 ? 502 : 503] as const)) {
 			vi.stubGlobal("fetch", fetchMock);
 			await expect(
-				ingestAnalytics(ctx(), controls({ forwarder: createAnalyticsForwarder() })),
+				ingestAnalytics(
+					ctx(),
+					controls({
+						secret: "collector-service-secret-0123456789",
+						forwarder: createAnalyticsForwarder(),
+					}),
+				),
 			).rejects.toMatchObject({ status });
 			vi.unstubAllGlobals();
 		}

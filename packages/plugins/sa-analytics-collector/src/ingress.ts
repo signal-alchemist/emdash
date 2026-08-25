@@ -25,6 +25,7 @@ export class AnalyticsIngressError extends Error {
 export const ANALYTICS_UPSTREAM = "https://analytics.signal-alchemist.example/v1/events";
 export const ANALYTICS_BODY_LIMIT = 64_000;
 const WINDOW_MS = 60_000;
+const BODY_HMAC = /^[a-f0-9]{64}$/;
 
 export interface DurableReservation {
 	commit(): Promise<void>;
@@ -38,6 +39,7 @@ export interface AnalyticsForwarder {
 		body: string,
 		idempotencyKey: string,
 		signal: AbortSignal,
+		bodyHmac: string,
 	): Promise<"accepted" | "rejected">;
 }
 
@@ -48,13 +50,18 @@ export function createAnalyticsForwarder(endpoint = ANALYTICS_UPSTREAM): Analyti
 		throw new Error("Analytics upstream must be the configured HTTPS endpoint");
 	}
 	return {
-		async forward(body, idempotencyKey, signal) {
+		async forward(body, idempotencyKey, signal, bodyHmac) {
+			if (typeof bodyHmac !== "string" || !BODY_HMAC.test(bodyHmac)) {
+				throw new Error("Analytics upstream body signature is invalid");
+			}
 			const response = await fetch(ANALYTICS_UPSTREAM, {
 				method: "POST",
 				redirect: "error",
 				headers: {
 					"content-type": "application/json",
+					"x-analytics-version": "1",
 					"x-idempotency-key": idempotencyKey,
+					"x-analytics-signature": `sha256=${bodyHmac}`,
 				},
 				body,
 				signal,
@@ -118,10 +125,7 @@ export async function ingestAnalytics(
 	const window = Math.floor(now / WINDOW_MS);
 	// The rate key is a rotating HMAC pseudonym. Raw IP, secret, and event body
 	// never leave this function and are never handed to the limiter.
-	const key = await hmac(
-		options.secret,
-		`${options.keyId}:rate:${window}:${ctx.requestMeta.ip}`,
-	);
+	const key = await hmac(options.secret, `${options.keyId}:rate:${window}:${ctx.requestMeta.ip}`);
 	let reservation: DurableReservation | null;
 	try {
 		reservation = await options.limiter.reserve(key, window, 60);
@@ -132,6 +136,7 @@ export async function ingestAnalytics(
 	// Idempotency is intentionally independent of IP and rate window: retries
 	// from another network or after rotation still identify the same batch.
 	const idempotency = await hmac(options.secret, `${options.keyId}:batch:${body}`);
+	const bodySignature = await hmac(options.secret, body);
 	let settled: "commit" | "rollback" | null = null;
 	let rollbackFailed = false;
 	const rollback = async () => {
@@ -147,7 +152,12 @@ export async function ingestAnalytics(
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 5_000);
 		try {
-			const result = await options.forwarder.forward(body, idempotency, controller.signal);
+			const result = await options.forwarder.forward(
+				body,
+				idempotency,
+				controller.signal,
+				bodySignature,
+			);
 			if (result !== "accepted") {
 				await rollback();
 				if (rollbackFailed) reject("ANALYTICS_RATE_ROLLBACK_FAILED", 503);
