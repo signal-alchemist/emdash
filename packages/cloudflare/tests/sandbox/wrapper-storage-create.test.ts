@@ -25,6 +25,13 @@ function extractContext(source: string, env: unknown) {
 }
 
 describe("Cloudflare generated storage wrapper", () => {
+	it("forwards media upload options", async () => {
+		const upload = vi.fn().mockResolvedValue({ mediaId: "m" });
+		const ctx = extractContext(generatePluginWrapper({ id: "plugin", name: "Plugin", version: "1.0.0", capabilities: [], storage: {} } as never), { BRIDGE: { mediaUpload: upload } });
+		await ctx.media.upload("a.txt", "text/plain", new Uint8Array([1, 2]), { sha256: "a".repeat(64), alt: "A", deduplicate: true });
+		expect(upload).toHaveBeenCalledWith("a.txt", "text/plain", expect.any(Uint8Array), { sha256: "a".repeat(64), alt: "A", deduplicate: true });
+	});
+
 	it("forwards storageCreate and preserves true/false", async () => {
 		const calls: Array<[string, string, unknown]> = [];
 		let result = true;

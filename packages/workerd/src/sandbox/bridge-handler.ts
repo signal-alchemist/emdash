@@ -275,6 +275,7 @@ async function dispatch(
 				requireString(body, "contentType"),
 				requireMediaBytes(body, "bytes"),
 				optionalString(body, "encoding"),
+				requireMediaUploadOptions(body.options),
 				opts.storage,
 			);
 		case "media/delete":
@@ -479,6 +480,18 @@ function optionalRecord(
 	if (value === undefined) return undefined;
 	if (!isRecord(value)) throw new Error(`Parameter ${key} must be an object when provided`);
 	return value;
+}
+
+function requireMediaUploadOptions(value: unknown): { sha256?: string; alt?: string; deduplicate?: boolean } {
+	if (value === undefined) return {};
+	if (!isRecord(value)) throw new Error("media/upload: options must be an object");
+	for (const key of Object.keys(value)) {
+		if (key !== "sha256" && key !== "alt" && key !== "deduplicate") throw new Error(`media/upload: unknown option ${key}`);
+	}
+	if (value.sha256 !== undefined && typeof value.sha256 !== "string") throw new Error("media/upload: sha256 must be a string");
+	if (value.alt !== undefined && typeof value.alt !== "string") throw new Error("media/upload: alt must be a string");
+	if (value.deduplicate !== undefined && typeof value.deduplicate !== "boolean") throw new Error("media/upload: deduplicate must be a boolean");
+	return { sha256: value.sha256, alt: value.alt, deduplicate: value.deduplicate };
 }
 
 function requireStringArray(body: Record<string, unknown>, key: string): string[] {
@@ -1085,6 +1098,7 @@ function rowToMediaItem(row: {
 	storage_key: string;
 	created_at: string;
 	sha256: string | null;
+	alt?: string | null;
 }) {
 	return {
 		id: row.id,
@@ -1094,6 +1108,7 @@ function rowToMediaItem(row: {
 		url: `/_emdash/api/media/file/${row.storage_key}`,
 		createdAt: row.created_at,
 		sha256: row.sha256,
+		alt: row.alt ?? null,
 	};
 }
 
@@ -1161,13 +1176,19 @@ async function mediaList(
 
 const ALLOWED_MIME_PREFIXES = ["image/", "video/", "audio/", "application/pdf"];
 const FILE_EXT_RE = /^\.[a-z0-9]{1,10}$/i;
+const SHA256_RE = /^[a-f0-9]{64}$/i;
+const hasControlCharacter = (value: string) => [...value].some((char) => {
+	const code = char.codePointAt(0) ?? 0;
+	return code < 32 || code === 127;
+});
 
-async function mediaUpload(
+export async function mediaUpload(
 	db: Kysely<Database>,
 	filename: string,
 	contentType: string,
 	bytes: string | number[],
 	encoding: string | undefined,
+	options: { sha256?: string; alt?: string; deduplicate?: boolean },
 	storage?: BridgeStorage | null,
 ): Promise<{ mediaId: string; storageKey: string; url: string }> {
 	if (!storage) {
@@ -1181,9 +1202,9 @@ async function mediaUpload(
 			`Unsupported content type: ${contentType}. Allowed: image/*, video/*, audio/*, application/pdf`,
 		);
 	}
-
 	const { ulid } = await import("ulidx");
 	const mediaId = ulid();
+
 	const basename = filename.includes("/")
 		? filename.slice(filename.lastIndexOf("/") + 1)
 		: filename;
@@ -1202,6 +1223,28 @@ async function mediaUpload(
 		throw new Error("media/upload: bytes must be a base64-encoded string or an array of bytes");
 	}
 	const sha256 = await mediaSha256(byteArray.slice().buffer);
+	const expectedSha256 = options.sha256;
+	const alt = options.alt;
+	const deduplicate = options.deduplicate === true;
+	if (expectedSha256 !== undefined && !SHA256_RE.test(expectedSha256)) {
+		throw new Error("sha256 must be a 64-character hexadecimal digest");
+	}
+	if (expectedSha256 !== undefined && expectedSha256.toLowerCase() !== sha256) {
+		throw new Error("sha256 does not match uploaded bytes");
+	}
+	if (deduplicate && (!alt || alt.length > 255 || hasControlCharacter(alt))) {
+		throw new Error("alt must be a non-empty printable string of 255 characters or fewer");
+	}
+	const enriched = { width: null, height: null };
+	const metadataMatches = (row: { mime_type: string; size: number | null; width?: number | null; height?: number | null; alt?: string | null }) =>
+		row.mime_type === contentType && row.size === byteArray.byteLength && (enriched.width === null || (row.width ?? null) === enriched.width) && (enriched.height === null || (row.height ?? null) === enriched.height) && (row.alt ?? null) === (alt ?? null);
+	if (deduplicate) {
+		const existing = await db.selectFrom("media").where("sha256", "=", sha256).where("status", "=", "ready").selectAll().executeTakeFirst();
+		if (existing) {
+			if (!metadataMatches(existing)) throw new Error("Media SHA-256 matches but metadata conflicts");
+			return { mediaId: existing.id, storageKey: existing.storage_key, url: `/_emdash/api/media/file/${existing.storage_key}` };
+		}
+	}
 
 	// Write bytes to storage first, then create DB record.
 	// If DB insert fails, delete the storage object so we don't leak files.
@@ -1221,6 +1264,7 @@ async function mediaUpload(
 				status: "ready",
 				created_at: now,
 				sha256,
+				alt: alt ?? null,
 			})
 			.execute();
 	} catch (error) {
@@ -1234,6 +1278,11 @@ async function mediaUpload(
 					`Storage object is leaked.`,
 				cleanupError,
 			);
+		}
+		const winner = await db.selectFrom("media").where("sha256", "=", sha256).where("status", "=", "ready").selectAll().executeTakeFirst();
+		if (winner) {
+			if (!metadataMatches(winner)) throw new Error("Media SHA-256 matches but metadata conflicts", { cause: error });
+			return { mediaId: winner.id, storageKey: winner.storage_key, url: `/_emdash/api/media/file/${winner.storage_key}` };
 		}
 		throw error;
 	}

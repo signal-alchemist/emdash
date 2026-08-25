@@ -20,6 +20,17 @@ function extractContext(source: string, bridgeCall: (method: string, body: unkno
 }
 
 describe("workerd storage collection wrapper", () => {
+	it("forwards media upload options", async () => {
+		const calls: Array<[string, unknown]> = [];
+		const context = extractContext(
+			generatePluginWrapper({ id: "plugin", name: "Plugin", version: "1.0.0", capabilities: [], storage: [] } as never,
+			{ backingServiceUrl: "http://bridge", authToken: "token", invokeToken: "invoke" }),
+			(method, body) => { calls.push([method, body]); return Promise.resolve({ mediaId: "m" }); },
+		);
+		await context.media.upload("a.txt", "text/plain", new Uint8Array([1, 2]), { sha256: "a".repeat(64), alt: "A", deduplicate: true });
+		expect(calls[0]).toEqual(["media/upload", expect.objectContaining({ options: { sha256: "a".repeat(64), alt: "A", deduplicate: true } })]);
+	});
+
 	it("sends storage/create and preserves true and false", async () => {
 		const calls: Array<[string, unknown]> = [];
 		let result = true;

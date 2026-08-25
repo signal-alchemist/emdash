@@ -150,6 +150,7 @@ interface BridgeMediaItem {
 	url: string;
 	createdAt: string;
 	sha256: string | null;
+	alt?: string | null;
 }
 
 /**
@@ -211,6 +212,7 @@ export interface PluginBridgeBinding {
 		filename: string,
 		contentType: string,
 		bytes: ArrayBuffer,
+		options?: { sha256?: string; alt?: string; deduplicate?: boolean },
 	): Promise<{ mediaId: string; storageKey: string; url: string }>;
 	mediaDelete(id: string): Promise<boolean>;
 	// Network
